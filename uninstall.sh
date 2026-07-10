@@ -82,6 +82,11 @@ for component in "${selected[@]}"; do
 done
 
 if ! find "$state_home" -maxdepth 1 -type f -name '*.tsv' -print -quit 2>/dev/null | grep -q .; then
+    rm -f "$HOME/.config/hypr/config/villode-suite.lua"
+    if [[ -f "$HOME/.config/hypr/hyprland.lua" ]]; then
+        sed -i '/Villode desktop suite/Id; /require("config\.villode-suite")/d' \
+            "$HOME/.config/hypr/hyprland.lua"
+    fi
     rm -rf "$state_home" "$data_home"
     rm -f "$HOME/.local/bin/villode-caelestia-uninstall"
 fi

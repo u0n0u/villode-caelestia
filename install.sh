@@ -371,6 +371,36 @@ install_component() {
     printf '%s\t%s\t%s\n' "$id" "$commit" "$name" > "$state_home/$id.tsv"
 }
 
+configure_hyprland_lua_autostart() {
+    local hypr_dir="$HOME/.config/hypr"
+    local lua_main="$hypr_dir/hyprland.lua"
+    local lua_module="$hypr_dir/config/villode-suite.lua"
+
+    $no_hyprland && return
+    [[ -f "$lua_main" ]] || return
+
+    mkdir -p "$(dirname "$lua_module")"
+    {
+        cat <<'EOF'
+-- Managed by Villode Caelestia. Hyprland 0.55+ ignores legacy exec-once
+-- entries when the active configuration is hyprland.lua.
+hl.on("hyprland.start", function()
+    hl.exec_cmd("caelestia shell -d")
+EOF
+        [[ -f "$state_home/desktop.tsv" ]] && \
+            echo '    hl.exec_cmd("villode-desktop --daemon")'
+        [[ -f "$state_home/dock.tsv" ]] && \
+            echo '    hl.exec_cmd("villode-dock --daemon")'
+        # Launcher owns its Lua window rules and autostart in its component
+        # module, so it is deliberately not started twice here.
+        echo 'end)'
+    } > "$lua_module"
+
+    if ! grep -Fq 'require("config.villode-suite")' "$lua_main"; then
+        printf '\n-- Villode desktop suite\nrequire("config.villode-suite")\n' >> "$lua_main"
+    fi
+}
+
 if [[ -f "$state_home/zh.tsv" && " ${selected[*]} " != *" zh "* ]]; then
     echo "检测到现有中文化组件，将在刷新 Shell 后自动重新应用。"
     selected+=(zh)
@@ -383,6 +413,8 @@ for component in zh desktop launcher dock; do
         install_component "$component"
     fi
 done
+
+configure_hyprland_lua_autostart
 
 install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
 install -Dm644 "$manifest" "$data_home/components.tsv"
