@@ -21,7 +21,7 @@
 - Hyprland / Wayland
 - Git
 - Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
-- 使用 `--with-deps` 时需要 `sudo` 权限
+- 默认自动检测并补齐依赖，安装系统包时需要 `sudo` 权限
 
 ## 交互式安装
 
@@ -36,13 +36,19 @@ cd villode-caelestia
 ## 一键安装全部组件
 
 ```bash
-./install.sh --all --with-deps
+./install.sh --all
 ```
 
 只安装指定组件：
 
 ```bash
-./install.sh --components zh,dock,launcher --with-deps
+./install.sh --components zh,dock,launcher
+```
+
+如果只想检查现有环境、不允许安装器补充系统依赖：
+
+```bash
+./install.sh --all --no-deps
 ```
 
 只部署文件，不启动程序，也不修改 Hyprland 配置：
