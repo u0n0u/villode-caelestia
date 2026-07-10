@@ -12,7 +12,9 @@ no_start=false
 no_hyprland=false
 offline=false
 no_native_build=false
-replace_existing=ask
+# A complete Villode installation owns the desktop-shell role. Existing shells
+# are backed up and removed by default; --keep-existing is the explicit opt-out.
+replace_existing=yes
 
 usage() {
     cat <<'EOF'
@@ -29,7 +31,7 @@ Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选�
   --no-hyprland            不写入 Hyprland 集成配置
   --offline                仅使用本地缓存，不访问网络
   --no-native-build        不构建 Fork 的原生插件，仅部署 QML
-  --replace-existing       备份并移除 Noctalia/Waybar 等现有桌面壳
+  --replace-existing       备份并移除现有桌面壳（默认）
   --keep-existing          保留检测到的现有桌面壳
   -h, --help               显示帮助
 EOF
@@ -184,7 +186,8 @@ detect_existing_shells() {
         for package_name in \
             cachyos-hypr-noctalia cachyos-niri-noctalia \
             noctalia noctalia-shell noctalia-qs \
-            waybar hyprpanel aylurs-gtk-shell eww; do
+            waybar hyprpanel aylurs-gtk-shell eww \
+            nwg-panel nwg-dock nwg-dock-hyprland ironbar; do
             if pacman -Q "$package_name" >/dev/null 2>&1; then
                 detected_shell_packages+=("$package_name")
             fi
@@ -198,7 +201,10 @@ detect_existing_shells() {
         "$HOME/.config/waybar" \
         "$HOME/.config/ags" \
         "$HOME/.config/hyprpanel" \
-        "$HOME/.config/eww"; do
+        "$HOME/.config/eww" \
+        "$HOME/.config/nwg-panel" \
+        "$HOME/.config/nwg-dock-hyprland" \
+        "$HOME/.config/ironbar"; do
         if [[ -e "$path" ]]; then
             detected_shell_paths+=("$path")
         fi
@@ -249,10 +255,15 @@ replace_existing_shells() {
     qs -c noctalia kill >/dev/null 2>&1 || true
     pkill -x noctalia >/dev/null 2>&1 || true
     pkill -x waybar >/dev/null 2>&1 || true
+    pkill -x hyprpanel >/dev/null 2>&1 || true
+    pkill -x nwg-panel >/dev/null 2>&1 || true
+    pkill -x nwg-dock >/dev/null 2>&1 || true
+    pkill -x nwg-dock-hyprland >/dev/null 2>&1 || true
+    pkill -x ironbar >/dev/null 2>&1 || true
 
     if [[ -d "$HOME/.config/hypr" ]]; then
         while IFS= read -r -d '' config_file; do
-            sed -i -E '/noctalia|waybar|hyprpanel|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
+            sed -i -E '/noctalia|waybar|hyprpanel|nwg-(panel|dock)|ironbar|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
         done < <(find "$HOME/.config/hypr" -type f \
             \( -name '*.conf' -o -name '*.lua' \) -print0)
     fi
@@ -262,7 +273,8 @@ replace_existing_shells() {
         for package_name in \
             cachyos-hypr-noctalia cachyos-niri-noctalia \
             noctalia noctalia-shell \
-            waybar hyprpanel aylurs-gtk-shell eww; do
+            waybar hyprpanel aylurs-gtk-shell eww \
+            nwg-panel nwg-dock nwg-dock-hyprland ironbar; do
             pacman -Q "$package_name" >/dev/null 2>&1 && removable_packages+=("$package_name")
         done
         if ((${#removable_packages[@]})); then

@@ -37,16 +37,11 @@ cd villode-caelestia
 ## 一键安装全部组件
 
 ```bash
-  ./install.sh --all
+./install.sh --all
 ```
 
-完整替换 Noctalia、Waybar 等现有桌面壳：
-
-```bash
-./install.sh --all --replace-existing
-```
-
-替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、移除冲突软件包，
+完整安装默认自动识别 Noctalia、Waybar、HyprPanel、AGS、Eww、Nwg Panel/Dock 和 Ironbar。
+替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、仅移除冲突软件包，
 并把 `noctalia-qs` 替换为标准 `quickshell-git`。备份位置会记录在
 `~/.local/state/villode-caelestia/desktop-migration.txt`。
 
@@ -85,6 +80,9 @@ cd villode-caelestia
 ```bash
 ./install.sh --all --offline
 ```
+
+虚拟机从旧桌面到纯净 Villode 环境的完整测试步骤见
+[`VM-TESTING.zh-CN.md`](VM-TESTING.zh-CN.md)。
 
 ## 卸载
 
