@@ -182,7 +182,8 @@ detect_existing_shells() {
 
     if command -v pacman >/dev/null 2>&1; then
         for package_name in \
-            cachyos-niri-noctalia noctalia-shell noctalia-qs \
+            cachyos-hypr-noctalia cachyos-niri-noctalia \
+            noctalia noctalia-shell noctalia-qs \
             waybar hyprpanel aylurs-gtk-shell eww; do
             if pacman -Q "$package_name" >/dev/null 2>&1; then
                 detected_shell_packages+=("$package_name")
@@ -246,18 +247,21 @@ replace_existing_shells() {
 
     qs -c noctalia-shell kill >/dev/null 2>&1 || true
     qs -c noctalia kill >/dev/null 2>&1 || true
+    pkill -x noctalia >/dev/null 2>&1 || true
     pkill -x waybar >/dev/null 2>&1 || true
 
     if [[ -d "$HOME/.config/hypr" ]]; then
         while IFS= read -r -d '' config_file; do
             sed -i -E '/noctalia|waybar|hyprpanel|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
-        done < <(find "$HOME/.config/hypr" -type f -name '*.conf' -print0)
+        done < <(find "$HOME/.config/hypr" -type f \
+            \( -name '*.conf' -o -name '*.lua' \) -print0)
     fi
 
     if command -v pacman >/dev/null 2>&1; then
         removable_packages=()
         for package_name in \
-            cachyos-niri-noctalia noctalia-shell \
+            cachyos-hypr-noctalia cachyos-niri-noctalia \
+            noctalia noctalia-shell \
             waybar hyprpanel aylurs-gtk-shell eww; do
             pacman -Q "$package_name" >/dev/null 2>&1 && removable_packages+=("$package_name")
         done
