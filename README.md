@@ -22,6 +22,7 @@
 - Git
 - Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
 - 默认自动检测并补齐依赖，安装系统包时需要 `sudo` 权限
+- Arch 系统没有 `yay`/`paru` 时，会自动安装 `base-devel`、`git` 和 `yay-bin`
 
 ## 交互式安装
 

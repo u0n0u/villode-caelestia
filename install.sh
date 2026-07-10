@@ -130,6 +130,42 @@ EOF
     fi
 fi
 
+bootstrap_install_tools() {
+    local bootstrap_dir
+
+    if ! $with_deps; then
+        return
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
+        if ! command -v git >/dev/null 2>&1 ||
+           { ! command -v yay >/dev/null 2>&1 && ! command -v paru >/dev/null 2>&1; }; then
+            sudo pacman -S --needed --noconfirm base-devel git
+        fi
+        if ! command -v yay >/dev/null 2>&1 && ! command -v paru >/dev/null 2>&1; then
+            echo "未检测到 yay 或 paru，正在安装 yay-bin……"
+            bootstrap_dir="$(mktemp -d)"
+            git clone --depth=1 https://aur.archlinux.org/yay-bin.git "$bootstrap_dir/yay-bin"
+            (
+                cd "$bootstrap_dir/yay-bin"
+                makepkg -si --needed --noconfirm
+            )
+            rm -rf "$bootstrap_dir"
+        fi
+    elif ! command -v git >/dev/null 2>&1; then
+        if command -v apt >/dev/null 2>&1; then
+            sudo apt update
+            sudo apt install -y git
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y git
+        elif command -v zypper >/dev/null 2>&1; then
+            sudo zypper install -y git
+        fi
+    fi
+}
+
+bootstrap_install_tools
+
 for command_name in git install; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "缺少依赖：$command_name" >&2
