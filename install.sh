@@ -262,9 +262,16 @@ replace_existing_shells() {
             pacman -Q "$package_name" >/dev/null 2>&1 && removable_packages+=("$package_name")
         done
         if ((${#removable_packages[@]})); then
-            sudo pacman -Rns --noconfirm "${removable_packages[@]}"
+            # Only remove the conflicting shells themselves.  Recursive orphan
+            # removal can delete shared Hyprland services such as portals,
+            # keyrings and the Dock's file manager.
+            sudo pacman -R --noconfirm "${removable_packages[@]}"
         fi
         if pacman -Q noctalia-qs >/dev/null 2>&1; then
+            # noctalia-qs conflicts with the standard package while providing
+            # quickshell-git to installed dependants. Remove only that provider,
+            # then immediately install the standard implementation.
+            sudo pacman -Rdd --noconfirm noctalia-qs
             if command -v yay >/dev/null 2>&1; then
                 yay -S --needed --noconfirm quickshell-git
             else
