@@ -16,6 +16,8 @@
 
 安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成中文补丁和组合测试后再更新锁定提交。
 
+安装开始时会先获取全部选中组件、检查源码完整性，并验证中文组件能否干净应用到锁定的 Shell。只有这些检查和组件安装全部成功后，显式请求的旧桌面替换才会执行；失败的安装不会把组件状态标记成最新。
+
 ## 前提
 
 - Hyprland / Wayland
@@ -23,6 +25,7 @@
 - Shell 安装器需要 `caelestia-cli`、Quickshell 以及 Caelestia 的运行依赖
 - 默认自动检测并补齐依赖，安装系统包时需要 `sudo` 权限
 - 独立会话由 UWSM 管理，Caelestia 的注销按钮会执行 `uwsm stop` 有序返回登录管理器
+- Arch 上自动补齐独立会话依赖时会安装 `foot`，用于 Super+Return 和终端内更新流程
 - Arch 系统没有 `yay`/`paru` 时，会自动安装 `base-devel`、`git` 和 `yay-bin`
 
 ## 交互式安装
@@ -51,8 +54,8 @@ cd villode-caelestia
 ./install.sh --all --replace-existing
 ```
 
-替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、仅移除冲突软件包，
-并把 `noctalia-qs` 替换为标准 `quickshell-git`。备份位置会记录在
+替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、仅移除冲突软件包。
+作为 Quickshell 提供者的 `noctalia-qs` 会保留，避免更新中断时留下不可用的 Shell。备份位置会记录在
 `~/.local/state/villode-caelestia/desktop-migration.txt`。
 
 默认行为等同于：
@@ -97,6 +100,24 @@ cd villode-caelestia
 ./install.sh --all --offline
 ```
 
+离线模式只使用已锁定且版本完全匹配的本地缓存，不会访问网络，也不会安装系统依赖。安装器会保存依赖、启动、Hyprland、独立会话、原生构建和离线模式，后续更新会复用这些选择。`--no-hyprland` 同时禁止写入用户会话和独立 Villode 会话的 Hyprland 集成。
+
+## 更新与修复
+
+检查全部组件的真实安装版本：
+
+```bash
+villode-caelestia-update --check
+```
+
+状态为“有更新”或“需要修复”时，直接执行：
+
+```bash
+villode-caelestia-update
+```
+
+“需要修复”表示状态记录缺失、文件不完整，或者 Shell 的真实 revision 与记录不一致。更新器会重新部署对应组件并重建可信的版本记录。离线安装会默认离线检查；需要恢复在线渠道时可使用 `villode-caelestia-update --online`。
+
 虚拟机从旧桌面到纯净 Villode 环境的完整测试步骤见
 [`VM-TESTING.zh-CN.md`](VM-TESTING.zh-CN.md)。
 
@@ -121,6 +142,7 @@ villode-caelestia-uninstall --components dock,launcher --purge
 ```
 
 默认卸载不会删除组件用户数据。中文化卸载也不会自动删除 `~/.config/quickshell/caelestia`，避免误删用户自行修改的 QML。
+部分卸载会按剩余组件重建独立会话的自启动项。全部卸载会移除更新/卸载命令并恢复安装前的注销命令，但会保留 `migration-backups` 和 `desktop-migration.txt`，以便恢复旧桌面。
 
 ## 项目边界
 

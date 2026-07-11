@@ -6,6 +6,28 @@ data_home="${XDG_DATA_HOME:-$HOME/.local/share}/villode-caelestia"
 selected=()
 purge=false
 
+acquire_operation_lock() {
+    local lock_file="$state_home/operation.lock" rc
+    [[ "${VILLODE_OPERATION_LOCK_HELD:-}" == 1 ]] && return 0
+    command -v flock >/dev/null 2>&1 || {
+        echo "缺少卸载器并发保护所需的 flock。" >&2
+        exit 69
+    }
+    install -d -m700 "$state_home"
+    : > "$lock_file"
+    chmod 600 "$lock_file"
+    if flock --exclusive --nonblock --close --conflict-exit-code 75 \
+        "$lock_file" env VILLODE_OPERATION_LOCK_HELD=1 "$0" "$@"; then
+        exit 0
+    else
+        rc=$?
+    fi
+    [[ "$rc" == 75 ]] && echo "另一个 Villode 安装、更新或卸载操作正在进行。" >&2
+    exit "$rc"
+}
+
+acquire_operation_lock "$@"
+
 usage() {
     cat <<'EOF'
 用法：villode-caelestia-uninstall [选项]
@@ -13,7 +35,7 @@ usage() {
 选项：
   --all                    卸载全部已安装组件
   --components LIST        卸载逗号分隔的组件：shell,zh,dock,desktop,launcher
-  --purge                  同时删除组件的用户数据
+  --purge                  同时删除组件的用户数据（不删除桌面迁移备份）
   -h, --help               显示帮助
 EOF
 }
@@ -24,7 +46,9 @@ add_components() {
     for item in "${items[@]}"; do
         item="${item//[[:space:]]/}"
         case "$item" in
-            shell|zh|dock|desktop|launcher) selected+=("$item") ;;
+            shell|zh|dock|desktop|launcher)
+                [[ " ${selected[*]} " == *" $item "* ]] || selected+=("$item")
+                ;;
             *) echo "未知组件：$item" >&2; exit 64 ;;
         esac
     done
@@ -46,8 +70,15 @@ while (($#)); do
     shift
 done
 
+installed_components() {
+    local id
+    for id in shell zh dock desktop launcher; do
+        [[ -f "$state_home/$id.tsv" ]] && printf '%s\n' "$id"
+    done
+}
+
 if ((${#selected[@]} == 0)); then
-    mapfile -t installed < <(find "$state_home" -maxdepth 1 -type f -name '*.tsv' -printf '%f\n' 2>/dev/null | sed 's/\.tsv$//' | sort)
+    mapfile -t installed < <(installed_components)
     if ((${#installed[@]} == 0)); then
         echo "没有记录到已安装的 Villode Caelestia 组件。"
         exit 0
@@ -58,7 +89,7 @@ if ((${#selected[@]} == 0)); then
     fi
     echo "已安装组件：${installed[*]}"
     read -r -p "输入要卸载的组件（逗号分隔，默认全部）：" answer
-    if [[ -z "$answer" || "$answer" == "all" ]]; then
+    if [[ -z "$answer" || "$answer" == all ]]; then
         selected=("${installed[@]}")
     else
         add_components "$answer"
@@ -81,18 +112,165 @@ for component in "${selected[@]}"; do
     rm -f "$state_home/$component.tsv"
 done
 
-if ! find "$state_home" -maxdepth 1 -type f -name '*.tsv' -print -quit 2>/dev/null | grep -q .; then
+component_installed() {
+    [[ -f "$state_home/$1.tsv" ]]
+}
+
+any_component_installed() {
+    local id
+    for id in shell zh dock desktop launcher; do
+        component_installed "$id" && return 0
+    done
+    return 1
+}
+
+any_session_component_installed() {
+    local id
+    for id in shell dock desktop launcher; do
+        component_installed "$id" && return 0
+    done
+    return 1
+}
+
+render_managed_session() {
+    local target="$HOME/.config/villode-hyprland/hyprland.conf"
+    local template="$data_home/release/session/villode-hyprland.conf" tmp
+    local have_shell=0 have_desktop=0 have_launcher=0 have_dock=0
+    [[ -f "$template" ]] || template="$target"
+    [[ -f "$template" ]] || return 0
+    component_installed shell && have_shell=1
+    component_installed desktop && have_desktop=1
+    component_installed launcher && have_launcher=1
+    component_installed dock && have_dock=1
+    mkdir -p "$(dirname "$target")"
+    tmp="$(mktemp "${target}.XXXXXX")"
+    awk \
+        -v shell="$have_shell" \
+        -v desktop="$have_desktop" \
+        -v launcher="$have_launcher" \
+        -v dock="$have_dock" '
+        /exec-once = caelestia shell -d/ && !shell { next }
+        /exec-once = villode-desktop --daemon/ && !desktop { next }
+        /exec-once = villode-launcher --daemon/ && !launcher { next }
+        /exec-once = villode-dock --daemon/ && !dock { next }
+        { print }
+    ' "$template" > "$tmp"
+    chmod 644 "$tmp"
+    mv "$tmp" "$target"
+}
+
+restore_session_logout() {
+    local config="$HOME/.config/caelestia/shell.json"
+    local backup="$state_home/logout-backup.json"
+    [[ -f "$backup" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || {
+        echo "缺少 python3，注销命令备份保留在：$backup" >&2
+        return 0
+    }
+    if python3 - "$config" "$backup" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+backup = Path(sys.argv[2])
+try:
+    saved = json.loads(backup.read_text())
+    data = json.loads(path.read_text()) if path.exists() else {}
+except (OSError, json.JSONDecodeError) as error:
+    print(f"无法恢复注销命令：{error}", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    print(f"无法恢复注销命令：{path} 顶层不是 JSON 对象", file=sys.stderr)
+    raise SystemExit(1)
+session = data.get("session")
+if not isinstance(session, dict):
+    session = {}
+    data["session"] = session
+commands = session.get("commands")
+if not isinstance(commands, dict):
+    commands = {}
+    session["commands"] = commands
+if commands.get("logout") != ["uwsm", "stop"]:
+    # The user changed or removed the value after installation. Their newer
+    # choice wins; only values still owned by Villode are restored.
+    raise SystemExit(0)
+if saved.get("present"):
+    commands["logout"] = saved.get("value")
+else:
+    commands.pop("logout", None)
+temp = path.with_name(path.name + f".tmp-{os.getpid()}")
+temp.parent.mkdir(parents=True, exist_ok=True)
+temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+temp.replace(path)
+PY
+    then
+        rm -f "$backup"
+    fi
+}
+
+refresh_managed_session() {
+    [[ -f "$state_home/session-managed" ]] || return 0
+    if any_session_component_installed; then
+        render_managed_session
+        return
+    fi
     rm -rf "$HOME/.config/villode-hyprland"
     sudo rm -f /usr/local/bin/start-villode-hyprland \
         /usr/local/bin/villode-hyprland-compositor \
         /usr/local/share/wayland-sessions/villode-hyprland.desktop
-    rm -f "$HOME/.config/hypr/config/villode-suite.lua"
-    if [[ -f "$HOME/.config/hypr/hyprland.lua" ]]; then
-        sed -i '/Villode desktop suite/Id; /require("config\.villode-suite")/d' \
-            "$HOME/.config/hypr/hyprland.lua"
+    restore_session_logout
+    rm -f "$state_home/session-managed"
+}
+
+adopt_legacy_managed_session() {
+    local target="$HOME/.config/villode-hyprland/hyprland.conf"
+    [[ -f "$state_home/session-managed" ]] && return 0
+    if [[ -f "$target" ]] && grep -Fxq '# Villode Hyprland session' "$target"; then
+        : > "$state_home/session-managed"
     fi
-    rm -rf "$state_home" "$data_home"
-    rm -f "$HOME/.local/bin/villode-caelestia-uninstall"
+}
+
+refresh_lua_integration() {
+    local lua_main="$HOME/.config/hypr/hyprland.lua"
+    local lua_module="$HOME/.config/hypr/config/villode-suite.lua" tmp
+    [[ -f "$lua_module" ]] || return 0
+    if ! component_installed shell && ! component_installed desktop && ! component_installed dock; then
+        rm -f "$lua_module"
+        if [[ -f "$lua_main" ]]; then
+            sed -i '/Villode desktop suite/Id; /require("config\.villode-suite")/d' "$lua_main"
+        fi
+        return
+    fi
+    tmp="$(mktemp "${lua_module}.XXXXXX")"
+    {
+        echo '-- Managed by Villode Caelestia.'
+        echo 'hl.on("hyprland.start", function()'
+        component_installed shell && echo '    hl.exec_cmd("caelestia shell -d")'
+        component_installed desktop && echo '    hl.exec_cmd("villode-desktop --daemon")'
+        component_installed dock && echo '    hl.exec_cmd("villode-dock --daemon")'
+        echo 'end)'
+    } > "$tmp"
+    mv "$tmp" "$lua_module"
+}
+
+adopt_legacy_managed_session
+refresh_managed_session
+refresh_lua_integration
+
+if ! any_component_installed; then
+    # Integration metadata can be removed, but migration backups deliberately
+    # stay in state_home so an ordinary uninstall never destroys recovery data.
+    restore_session_logout
+    rm -rf "$data_home"
+    rm -f "$state_home/install-options"
+    rm -f "$HOME/.local/bin/villode-caelestia-uninstall" \
+        "$HOME/.local/bin/villode-caelestia-update"
+    # The outer flock process still owns the unlinked inode until this script
+    # exits, so removing the pathname here cannot release protection early.
+    rm -f "$state_home/operation.lock"
+    rmdir "$state_home" 2>/dev/null || true
 fi
 
 echo "卸载完成。"
