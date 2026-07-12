@@ -218,14 +218,14 @@ while IFS=$'\t' read -r id _repo latest name; do
     resolve_installed "$id"
     if ! $component_present; then
         status="未安装"
+    elif [[ "$installed" != "$latest" ]]; then
+        status="有更新"
+        actionable+=("$id")
     elif $repair_needed; then
         status="需要修复"
         actionable+=("$id")
-    elif [[ "$installed" == "$latest" ]]; then
-        status="已是最新"
     else
-        status="有更新"
-        actionable+=("$id")
+        status="已是最新"
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' \
         "$id" "$name" "${installed:0:7}" "${latest:0:7}" "$status"
