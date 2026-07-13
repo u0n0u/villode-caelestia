@@ -228,6 +228,41 @@ component_source_dir() {
     return 1
 }
 
+sources_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/sources"
+
+# Ensure local component git cache has the commits needed for dates/changelog.
+# Without this, shallow installs only contain the previously installed tip, so
+# "latest" metadata and f941..36d9 changelogs show up empty in the UI.
+ensure_component_git_meta() {
+    local id="$1" repo_url="$2" installed="$3" latest="$4"
+    local src="$sources_home/$id"
+
+    [[ -n "$repo_url" ]] || return 0
+    # Use caller's offline_mode (do not local-shadow it).
+    [[ "${offline_mode:-no}" == yes ]] && return 0
+    command -v git >/dev/null 2>&1 || return 0
+
+    mkdir -p "$sources_home"
+    if [[ ! -d "$src/.git" ]]; then
+        git clone -q --filter=blob:none --depth=1 "$repo_url" "$src" 2>/dev/null || return 0
+    fi
+    git -C "$src" remote set-url origin "$repo_url" 2>/dev/null || true
+
+    # Prefer fetching the pinned latest (and installed base for ranges).
+    if [[ -n "$latest" ]] && ! git -C "$src" cat-file -e "${latest}^{commit}" 2>/dev/null; then
+        git -C "$src" fetch -q --depth=1 origin "$latest" 2>/dev/null || true
+    fi
+    if [[ -n "$installed" && "$installed" != "$latest" ]] &&
+       ! git -C "$src" cat-file -e "${installed}^{commit}" 2>/dev/null; then
+        git -C "$src" fetch -q --depth=1 origin "$installed" 2>/dev/null || true
+    fi
+    # Deepen so ${installed}..${latest} can be walked when both tips exist.
+    if [[ -n "$installed" && -n "$latest" && "$installed" != "$latest" ]]; then
+        git -C "$src" fetch -q --deepen=80 origin 2>/dev/null || true
+    fi
+    return 0
+}
+
 # Prints "ISO8601|subject" for a commit, or empty.
 git_commit_meta() {
     local repo="$1" commit="$2"
@@ -287,7 +322,10 @@ while IFS=$'\t' read -r id repo latest name; do
     fi
 
     if [[ "$mode" == check-json ]]; then
+        ensure_component_git_meta "$id" "$repo" "$installed" "$latest"
         src_dir="$(component_source_dir "$id" || true)"
+        # Prefer the canonical sources cache after ensure_component_git_meta.
+        [[ -d "$sources_home/$id/.git" ]] && src_dir="$sources_home/$id"
         installed_meta="$(git_commit_meta "$src_dir" "$installed")"
         latest_meta="$(git_commit_meta "$src_dir" "$latest")"
         installed_at="${installed_meta%%|*}"
@@ -311,6 +349,24 @@ while IFS=$'\t' read -r id repo latest name; do
             changes="$latest_subject"
         elif [[ -n "$installed_subject" ]]; then
             changes="$installed_subject"
+        fi
+        # Helpful fallbacks when git range is empty / objects still missing.
+        if [[ -z "$changes" ]]; then
+            if [[ "$status" == "有更新" && -n "$latest_subject" ]]; then
+                changes="$latest_subject"
+            elif [[ "$status" == "需要修复" ]]; then
+                case "$id" in
+                    zh)
+                        changes="中文补丁与当前 Shell 不兼容，需重新适配或重装简体中文"
+                        ;;
+                    shell)
+                        changes="本地 Shell 安装标记不一致，请重新安装以修复"
+                        ;;
+                    *)
+                        changes="本地安装状态不完整，请重新安装以修复"
+                        ;;
+                esac
+            fi
         fi
         # row: id name installed_short latest_short status installed_full latest_full installed_at latest_at changes_pipe
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -374,6 +430,22 @@ optional=()
 for id in "${actionable[@]}"; do
     [[ "$id" != shell ]] && optional+=("$id")
 done
+
+# Shell UI changes often break the Chinese language patch dry-run. If both are
+# queued, prefer updating Shell now and leave zh for a later reinstall rather
+# than failing the whole batch in preflight_zh_compatibility.
+if [[ " ${actionable[*]} " == *" shell "* && " ${optional[*]} " == *" zh "* ]]; then
+    filtered=()
+    for id in "${optional[@]}"; do
+        if [[ "$id" == zh ]]; then
+            echo "注意：Shell 有更新时暂不同步简体中文（补丁需与新 Shell 对齐）。"
+            echo "      Shell 更新完成后，可在设置中单独修复「Caelestia 简体中文」。"
+            continue
+        fi
+        filtered+=("$id")
+    done
+    optional=("${filtered[@]}")
+fi
 
 args=(--keep-existing)
 if [[ " ${actionable[*]} " != *" shell "* ]] &&
