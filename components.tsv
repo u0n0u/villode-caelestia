@@ -1,5 +1,5 @@
 # id	repository	commit	name
-shell	https://github.com/Villode/caelestia-shell.git	e3366d66f7715843f1984f6b6ee981d964066241	Villode Caelestia Shell
+shell	https://github.com/Villode/caelestia-shell.git	7ba739333f4cdf44492b9e70a38c2576db42e840	Villode Caelestia Shell
 zh	https://github.com/Villode/caelestia-zh-cn.git	6328b8b44af5eae6b2ed2e46d831f79d9a680401	Caelestia 简体中文
 dock	https://github.com/Villode/villode-dock.git	8a147c7305ab64f82d8c8bdb6702643b4fbe9837	Villode Dock
 desktop	https://github.com/Villode/villode-desktop.git	efa8384f0e1ec614cdd95f18bb07b31e77dc6b2d	Villode Desktop
