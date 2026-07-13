@@ -158,6 +158,7 @@ component_evidence() {
         dock) [[ -x "$HOME/.local/bin/villode-dock" ]] ;;
         desktop) [[ -x "$HOME/.local/bin/villode-desktop" ]] ;;
         launcher) [[ -x "$HOME/.local/bin/villode-launcher" ]] ;;
+        cursor) [[ -x "$HOME/.local/bin/villode-cursor-shake" ]] ;;
         *) return 1 ;;
     esac
 }
@@ -307,7 +308,9 @@ while IFS=$'\t' read -r id repo latest name; do
     resolve_installed "$id"
     if ! $component_present; then
         status="未安装"
-    elif [[ "$installed" != "$latest" ]]; then
+        # Offer install for optional components the user does not have yet.
+        actionable+=("$id")
+    elif [[ -n "$installed" && -n "$latest" && "$installed" != "$latest" ]]; then
         status="有更新"
         actionable+=("$id")
     elif $repair_needed; then
@@ -354,6 +357,30 @@ while IFS=$'\t' read -r id repo latest name; do
         if [[ -z "$changes" ]]; then
             if [[ "$status" == "有更新" && -n "$latest_subject" ]]; then
                 changes="$latest_subject"
+            elif [[ "$status" == "未安装" ]]; then
+                case "$id" in
+                    cursor)
+                        changes="Mac 风格晃动定位指针；未安装时可在此安装"
+                        ;;
+                    zh)
+                        changes="Caelestia 界面简体中文补丁"
+                        ;;
+                    dock)
+                        changes="底部 Dock 栏"
+                        ;;
+                    desktop)
+                        changes="动态壁纸 / 桌面"
+                        ;;
+                    launcher)
+                        changes="应用启动器"
+                        ;;
+                    shell)
+                        changes="桌面 Shell（面板、通知、设置）"
+                        ;;
+                    *)
+                        changes="可安装此组件"
+                        ;;
+                esac
             elif [[ "$status" == "需要修复" ]]; then
                 case "$id" in
                     zh)
@@ -413,7 +440,7 @@ with open(path, encoding="utf-8") as fh:
 out = {
     "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     "components": components,
-    "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复")),
+    "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复", "未安装")),
 }
 print(json.dumps(out, ensure_ascii=False, indent=2))
 PY
