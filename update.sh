@@ -34,17 +34,19 @@ acquire_operation_lock "$@"
 
 usage() {
     cat <<'EOF'
-用法：villode-caelestia-update [--check] [--online|--offline]
+用法：villode-caelestia-update [--check|--check-json] [--online|--offline]
 
-  --check     仅检查，不安装
-  --online    本次允许联网（执行安装时会保存在线更新模式）
-  --offline   仅使用已缓存的发布渠道和组件源码，绝不联网或安装依赖
+  --check       仅检查，不安装（制表符摘要）
+  --check-json  仅检查，输出详细 JSON（供设置页展示）
+  --online      本次允许联网（执行安装时会保存在线更新模式）
+  --offline     仅使用已缓存的发布渠道和组件源码，绝不联网或安装依赖
 EOF
 }
 
 while (($#)); do
     case "$1" in
         --check) mode=check ;;
+        --check-json) mode=check-json ;;
         --online) network_override=online ;;
         --offline) network_override=offline ;;
         -h|--help) usage; exit 0 ;;
@@ -209,11 +211,63 @@ resolve_installed() {
     fi
 }
 
+component_source_dir() {
+    local id="$1"
+    local candidates=(
+        "${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/sources/$id"
+        "$data_home/components/$id"
+        "$cache_home/components/$id"
+    )
+    local dir
+    for dir in "${candidates[@]}"; do
+        if [[ -d "$dir/.git" || -d "$dir" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Prints "ISO8601|subject" for a commit, or empty.
+git_commit_meta() {
+    local repo="$1" commit="$2"
+    [[ -n "$repo" && -n "$commit" && -d "$repo/.git" ]] || return 0
+    if git -C "$repo" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+        git -C "$repo" log -1 --format='%cI|%s' "$commit" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Prints up to 12 subject lines of commits in (from, to].
+git_changelog_lines() {
+    local repo="$1" from="$2" to="$3"
+    [[ -n "$repo" && -n "$to" && -d "$repo/.git" ]] || return 0
+    if [[ -n "$from" ]] && git -C "$repo" cat-file -e "${from}^{commit}" 2>/dev/null &&
+       git -C "$repo" cat-file -e "${to}^{commit}" 2>/dev/null; then
+        git -C "$repo" log --format='%s' --no-merges "${from}..${to}" 2>/dev/null | head -n 12 || true
+    elif git -C "$repo" cat-file -e "${to}^{commit}" 2>/dev/null; then
+        git -C "$repo" log -1 --format='%s' "$to" 2>/dev/null || true
+    fi
+    return 0
+}
+
+state_mtime_iso() {
+    local file="$state_home/$1.tsv"
+    if [[ -f "$file" ]]; then
+        date -d "@$(stat -c '%Y' "$file")" --iso-8601=seconds 2>/dev/null ||
+            date -r "$(stat -c '%Y' "$file")" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || true
+    fi
+    return 0
+}
+
 refresh_channel
 manifest="$channel_dir/components.tsv"
 actionable=()
+# JSON rows collected as tab-separated payload for python encoder
+json_rows_file="$(mktemp)"
+trap 'rm -f "$json_rows_file"' EXIT
 
-while IFS=$'\t' read -r id _repo latest name; do
+while IFS=$'\t' read -r id repo latest name; do
     [[ -z "$id" || "$id" == \#* ]] && continue
     resolve_installed "$id"
     if ! $component_present; then
@@ -227,11 +281,86 @@ while IFS=$'\t' read -r id _repo latest name; do
     else
         status="已是最新"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$id" "$name" "${installed:0:7}" "${latest:0:7}" "$status"
+    if [[ "$mode" != check-json ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "$name" "${installed:0:7}" "${latest:0:7}" "$status"
+    fi
+
+    if [[ "$mode" == check-json ]]; then
+        src_dir="$(component_source_dir "$id" || true)"
+        installed_meta="$(git_commit_meta "$src_dir" "$installed")"
+        latest_meta="$(git_commit_meta "$src_dir" "$latest")"
+        installed_at="${installed_meta%%|*}"
+        installed_subject=""
+        if [[ "$installed_meta" == *"|"* ]]; then
+            installed_subject="${installed_meta#*|}"
+        fi
+        latest_at="${latest_meta%%|*}"
+        latest_subject=""
+        if [[ "$latest_meta" == *"|"* ]]; then
+            latest_subject="${latest_meta#*|}"
+        fi
+        # Prefer commit author date; fall back to local install state mtime.
+        if [[ -z "$installed_at" ]]; then
+            installed_at="$(state_mtime_iso "$id")"
+        fi
+        changes=""
+        if [[ "$status" == "有更新" || "$status" == "需要修复" ]]; then
+            changes="$(git_changelog_lines "$src_dir" "$installed" "$latest" | paste -sd '|' -)"
+        elif [[ -n "$latest_subject" ]]; then
+            changes="$latest_subject"
+        elif [[ -n "$installed_subject" ]]; then
+            changes="$installed_subject"
+        fi
+        # row: id name installed_short latest_short status installed_full latest_full installed_at latest_at changes_pipe
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "$name" "${installed:0:7}" "${latest:0:7}" "$status" \
+            "${installed:-}" "${latest:-}" "${installed_at:-}" "${latest_at:-}" "${changes:-}" \
+            >> "$json_rows_file"
+    fi
 done < "$manifest"
 
 if [[ "$mode" == check ]]; then
+    exit 0
+fi
+
+if [[ "$mode" == check-json ]]; then
+    python3 - "$json_rows_file" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+
+path = sys.argv[1]
+components = []
+with open(path, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("\t")
+        while len(parts) < 10:
+            parts.append("")
+        (cid, name, inst_s, lat_s, status, inst_f, lat_f, inst_at, lat_at, changes) = parts[:10]
+        change_list = [c for c in changes.split("|") if c.strip()] if changes else []
+        components.append({
+            "id": cid,
+            "name": name,
+            "installed": inst_s or "—",
+            "latest": lat_s or "—",
+            "installedFull": inst_f or "",
+            "latestFull": lat_f or "",
+            "status": status,
+            "installedAt": inst_at or "",
+            "releasedAt": lat_at or "",
+            "changes": change_list,
+        })
+
+out = {
+    "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    "components": components,
+    "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复")),
+}
+print(json.dumps(out, ensure_ascii=False, indent=2))
+PY
     exit 0
 fi
 
