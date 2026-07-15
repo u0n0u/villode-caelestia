@@ -22,7 +22,7 @@ ps -eo pid,cmd | grep -Ei 'noctalia|waybar|hyprpanel|ags|eww|nwg|ironbar' | grep
 ## 3. 安装
 
 ```bash
-git clone https://github.com/Villode/villode-caelestia.git
+git clone https://github.com/u0n0u/villode-caelestia.git
 cd villode-caelestia
 ./install.sh --all
 ```

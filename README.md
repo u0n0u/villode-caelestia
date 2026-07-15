@@ -8,12 +8,12 @@
 
 | 组件 | 作用 | 独立仓库 |
 | --- | --- | --- |
-| Shell | 固定、测试并由 Villode 跟随适配的 Caelestia 本体 | [caelestia-shell](https://github.com/Villode/caelestia-shell) |
-| 中文化 | Caelestia Shell 简体中文界面 | [caelestia-zh-cn](https://github.com/Villode/caelestia-zh-cn) |
-| Dock | macOS 风格 Dock、实时毛玻璃、拖放固定 | [villode-dock](https://github.com/Villode/villode-dock) |
-| Desktop | 静态图片、视频和 HTML 桌面层 | [villode-desktop](https://github.com/Villode/villode-desktop) |
-| Launcher | macOS 风格应用启动台，与 Dock 拖放联动 | [villode-launcher](https://github.com/Villode/villode-launcher) |
-| 指针放大 | Mac 风格晃动定位指针（cursor） | 随 [caelestia-shell](https://github.com/Villode/caelestia-shell) 的 `contrib/villode-cursor` 提供 |
+| Shell | 固定、测试并由 Villode 跟随适配的 Caelestia 本体 | [caelestia-shell](https://github.com/u0n0u/caelestia-shell) |
+| 中文化 | Caelestia Shell 简体中文界面 | [caelestia-zh-cn](https://github.com/u0n0u/caelestia-zh-cn) |
+| Dock | macOS 风格 Dock、实时毛玻璃、拖放固定 | [villode-dock](https://github.com/u0n0u/villode-dock) |
+| Desktop | 静态图片、视频和 HTML 桌面层 | [villode-desktop](https://github.com/u0n0u/villode-desktop) |
+| Launcher | macOS 风格应用启动台，与 Dock 拖放联动 | [villode-launcher](https://github.com/u0n0u/villode-launcher) |
+| 指针放大 | Mac 风格晃动定位指针（cursor） | 随 [caelestia-shell](https://github.com/u0n0u/caelestia-shell) 的 `contrib/villode-cursor` 提供 |
 
 安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成翻译目录和组合测试后再更新锁定提交。
 
@@ -32,7 +32,7 @@
 ## 交互式安装
 
 ```bash
-git clone https://github.com/Villode/villode-caelestia.git
+git clone https://github.com/u0n0u/villode-caelestia.git
 cd villode-caelestia
 ./install.sh
 ```
@@ -151,7 +151,7 @@ villode-caelestia-uninstall --components dock,launcher --purge
 
 ## 项目边界
 
-- Caelestia 本体由 `Villode/caelestia-shell` Fork 完整保存和维护。
+- Caelestia 本体由 `u0n0u/caelestia-shell` Fork 完整保存和维护。
 - 统一仓库负责编排并锁定版本，不重复复制组件源码。
 - 每个组件可独立安装、更新和卸载。
 - 完整安装会先安装 Launcher、最后安装并刷新 Dock，确保启动台入口立即显示。

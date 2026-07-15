@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-remote="https://github.com/Villode/villode-caelestia.git"
+remote="https://github.com/u0n0u/villode-caelestia.git"
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/update-channel"
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
 user_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
