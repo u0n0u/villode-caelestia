@@ -97,7 +97,7 @@ SH
     XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
     XDG_CACHE_HOME="$root/cache" \
         "$channel/install.sh" --components shell --offline --no-deps \
-        --no-start --no-hyprland --no-native-build >/dev/null
+        --no-start --no-hyprland --no-native-build --keep-existing >/dev/null
     [[ -e "$root/home/shell-installed" ]] || fail '离线无 Hyprland 安装未执行 Shell'
     [[ -f "$root/state/villode-caelestia/shell.tsv" ]] || fail '成功安装未发布 Shell 状态'
 }
@@ -268,6 +268,76 @@ assert json.load(open(sys.argv[1]))["session"]["commands"]["logout"] == ["loginc
 PY
 }
 
+test_full_uninstall_removes_cursor() {
+    local root state data home fake
+    root="$work/uninstall-cursor"
+    home="$root/home"
+    state="$root/state/villode-caelestia"
+    data="$root/data/villode-caelestia"
+    fake="$root/fake-bin"
+    mkdir -p "$home/.local/bin" "$state" "$fake"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$fake/sudo"
+    chmod +x "$fake/sudo"
+    mkdir -p "$data/components/shell"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$data/components/shell/uninstall.sh"
+    chmod +x "$data/components/shell/uninstall.sh"
+    printf '%s\t%s\t%s\n' shell deadbeef Shell > "$state/shell.tsv"
+    mkdir -p "$data/components/cursor"
+    # Mirror the real cursor uninstaller: it removes the shake binary itself.
+    printf '#!/usr/bin/env bash\nrm -f "$HOME/.local/bin/villode-cursor-shake"\n' \
+        > "$data/components/cursor/uninstall.sh"
+    chmod +x "$data/components/cursor/uninstall.sh"
+    printf '%s\t%s\t%s\n' cursor deadbeef Cursor > "$state/cursor.tsv"
+    : > "$home/.local/bin/villode-cursor-shake"
+    chmod +x "$home/.local/bin/villode-cursor-shake"
+
+    HOME="$home" XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+        PATH="$fake:$PATH" "$repo_dir/uninstall.sh" --all
+    [[ ! -e "$home/.local/bin/villode-cursor-shake" ]] || fail 'cursor 未随 --all 卸载'
+    [[ ! -f "$state/cursor.tsv" ]] || fail 'cursor 状态记录残留'
+    [[ ! -e "$data" ]] || fail '全量卸载后数据目录残留'
+    [[ ! -e "$state" ]] || fail '全量卸载后状态目录残留'
+}
+
+test_update_skips_missing_components_by_default() {
+    local root="$work/update-missing" args_file output
+    mkdir -p "$root/home/.local/bin" "$root/state/villode-caelestia" \
+        "$root/data/villode-caelestia/release" \
+        "$root/data/villode-caelestia/components/dock"
+    args_file="$root/install-args"
+    printf '#!/usr/bin/env bash\n# supports --skip-shell\nprintf "%%s\\n" "$@" > "%s"\n' "$args_file" \
+        > "$root/data/villode-caelestia/release/install.sh"
+    chmod +x "$root/data/villode-caelestia/release/install.sh"
+    printf '%s\n' \
+        $'# id\trepository\tcommit\tname' \
+        $'dock\thttps://invalid/dock\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tDock' \
+        $'desktop\thttps://invalid/desktop\t2222222222222222222222222222222222222222\tDesktop' \
+        > "$root/data/villode-caelestia/release/components.tsv"
+    printf '%s\n' 'offline=yes' > "$root/state/villode-caelestia/install-options"
+    printf '%s\t%s\t%s\n' dock bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb Dock \
+        > "$root/state/villode-caelestia/dock.tsv"
+    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        > "$root/data/villode-caelestia/components/dock/revision"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$root/home/.local/bin/villode-dock"
+    chmod +x "$root/home/.local/bin/villode-dock"
+
+    output="$(
+        HOME="$root/home" XDG_STATE_HOME="$root/state" \
+        XDG_DATA_HOME="$root/data" XDG_CACHE_HOME="$root/cache" \
+            "$repo_dir/update.sh"
+    )"
+    [[ ! -e "$args_file" ]] || fail '默认更新不应安装未安装组件'
+    grep -q 'install-missing' <<< "$output" || fail '默认更新未提示 --install-missing'
+
+    HOME="$root/home" XDG_STATE_HOME="$root/state" \
+    XDG_DATA_HOME="$root/data" XDG_CACHE_HOME="$root/cache" \
+        "$repo_dir/update.sh" --install-missing >/dev/null
+    [[ -f "$args_file" ]] || fail '--install-missing 未执行安装'
+    grep -Fxq -- '--components' "$args_file" || fail '--install-missing 未传递组件参数'
+    grep -Fxq -- 'desktop' "$args_file" || fail '--install-missing 未安装缺失组件'
+    grep -Fxq -- '--skip-shell' "$args_file" || fail '--install-missing 不应重装 Shell'
+}
+
 test_restart_shell_retries_already_running() {
     local root="$work/restart-shell" fake log pid_file
     root="$work/restart-shell"
@@ -373,9 +443,11 @@ SH
 
 test_update_repairs_real_revision
 test_update_reuses_install_options
+test_update_skips_missing_components_by_default
 test_preflight_failure_preserves_existing_desktop
 test_offline_no_hyprland_installs_successfully
 test_operation_lock_rejects_concurrent_update
 test_partial_uninstall_rebuilds_session
+test_full_uninstall_removes_cursor
 test_restart_shell_retries_already_running
 echo 'integration tests: ok'

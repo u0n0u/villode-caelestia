@@ -34,7 +34,7 @@ usage() {
 
 选项：
   --all                    卸载全部已安装组件
-  --components LIST        卸载逗号分隔的组件：shell,zh,dock,desktop,launcher
+  --components LIST        卸载逗号分隔的组件：shell,zh,dock,desktop,launcher,cursor
   --purge                  同时删除组件的用户数据（不删除桌面迁移备份）
   -h, --help               显示帮助
 EOF
@@ -46,7 +46,7 @@ add_components() {
     for item in "${items[@]}"; do
         item="${item//[[:space:]]/}"
         case "$item" in
-            shell|zh|dock|desktop|launcher)
+            shell|zh|dock|desktop|launcher|cursor)
                 [[ " ${selected[*]} " == *" $item "* ]] || selected+=("$item")
                 ;;
             *) echo "未知组件：$item" >&2; exit 64 ;;
@@ -56,7 +56,7 @@ add_components() {
 
 while (($#)); do
     case "$1" in
-        --all) selected=(zh dock desktop launcher shell) ;;
+        --all) selected=(zh dock desktop launcher cursor shell) ;;
         --components)
             [[ $# -ge 2 ]] || { echo "--components 缺少参数" >&2; exit 64; }
             add_components "$2"
@@ -72,7 +72,7 @@ done
 
 installed_components() {
     local id
-    for id in shell zh dock desktop launcher; do
+    for id in shell zh dock desktop launcher cursor; do
         [[ -f "$state_home/$id.tsv" ]] && printf '%s\n' "$id"
     done
 }
@@ -103,7 +103,9 @@ for component in "${selected[@]}"; do
         continue
     fi
     args=()
-    if $purge && [[ "$component" != zh ]]; then
+    # zh keeps user QML edits; cursor's uninstaller always removes its own
+    # config/data/state and takes no flags.
+    if $purge && [[ "$component" != zh && "$component" != cursor ]]; then
         args+=(--purge)
     fi
     echo "==> 卸载 $component"
@@ -118,7 +120,7 @@ component_installed() {
 
 any_component_installed() {
     local id
-    for id in shell zh dock desktop launcher; do
+    for id in shell zh dock desktop launcher cursor; do
         component_installed "$id" && return 0
     done
     return 1

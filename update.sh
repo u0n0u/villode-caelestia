@@ -9,6 +9,7 @@ data_home="$user_data_home/villode-caelestia"
 shell_state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia-shell"
 mode=update
 network_override=""
+install_missing=no
 
 acquire_operation_lock() {
     local lock_file="$state_home/operation.lock" rc
@@ -34,12 +35,13 @@ acquire_operation_lock "$@"
 
 usage() {
     cat <<'EOF'
-用法：villode-caelestia-update [--check|--check-json] [--online|--offline]
+用法：villode-caelestia-update [--check|--check-json] [--online|--offline] [--install-missing]
 
   --check       仅检查，不安装（制表符摘要）
   --check-json  仅检查，输出详细 JSON（供设置页展示）
   --online      本次允许联网（执行安装时会保存在线更新模式）
   --offline     仅使用已缓存的发布渠道和组件源码，绝不联网或安装依赖
+  --install-missing  同时安装尚未安装的可选组件（默认只同步已安装组件）
 EOF
 }
 
@@ -49,6 +51,7 @@ while (($#)); do
         --check-json) mode=check-json ;;
         --online) network_override=online ;;
         --offline) network_override=offline ;;
+        --install-missing) install_missing=yes ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 64 ;;
     esac
@@ -298,6 +301,7 @@ state_mtime_iso() {
 refresh_channel
 manifest="$channel_dir/components.tsv"
 actionable=()
+missing=()
 declare -A action_status
 # JSON rows collected as tab-separated payload for python encoder
 json_rows_file="$(mktemp)"
@@ -308,8 +312,12 @@ while IFS=$'\t' read -r id repo latest name; do
     resolve_installed "$id"
     if ! $component_present; then
         status="未安装"
-        # Offer install for optional components the user does not have yet.
-        actionable+=("$id")
+        # A plain update must only sync what the user already chose to have;
+        # installing missing optional components is an explicit opt-in.
+        missing+=("$id")
+        if [[ "$install_missing" == yes ]]; then
+            actionable+=("$id")
+        fi
     elif [[ -n "$installed" && -n "$latest" && "$installed" != "$latest" ]]; then
         status="有更新"
         actionable+=("$id")
@@ -441,7 +449,8 @@ with open(path, encoding="utf-8") as fh:
 out = {
     "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     "components": components,
-    "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复", "未安装")),
+    # Only states a plain update will act on; "未安装" needs --install-missing.
+    "updateCount": sum(1 for c in components if c["status"] in ("有更新", "需要修复")),
 }
 print(json.dumps(out, ensure_ascii=False, indent=2))
 PY
@@ -450,7 +459,11 @@ fi
 
 if ((${#actionable[@]} == 0)); then
     echo
-    echo "所有 Villode 组件都已是最新版本。"
+    echo "所有已安装的 Villode 组件都是最新版本。"
+    if ((${#missing[@]})) && [[ "$install_missing" == no ]]; then
+        echo "尚未安装的可选组件：${missing[*]}"
+        echo "使用 villode-caelestia-update --install-missing 或重新运行安装器来安装。"
+    fi
     exit 0
 fi
 
@@ -495,6 +508,9 @@ if [[ " ${actionable[*]} " == *" shell "* ]]; then
 fi
 syncing+=("${optional[@]}")
 echo "即将同步 ${#syncing[@]} 个 Villode 组件：${syncing[*]}"
+if ((${#missing[@]})) && [[ "$install_missing" == no ]]; then
+    echo "跳过尚未安装的可选组件：${missing[*]}（可用 --install-missing 安装）"
+fi
 if [[ "$offline_mode" == yes ]]; then
     echo "更新源：本地缓存（离线）"
 else

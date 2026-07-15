@@ -6,6 +6,8 @@ manifest="$repo_dir/components.tsv"
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}/villode-caelestia/sources"
 state_home="${XDG_STATE_HOME:-$HOME/.local/state}/villode-caelestia"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}/villode-caelestia"
+# Keep the restart log out of the shared, predictable /tmp namespace.
+install_log="$state_home/install.log"
 selected=()
 with_deps=true
 no_start=false
@@ -18,7 +20,8 @@ reapply_zh=true
 # Keep the current desktop as a recovery path unless replacement is explicitly
 # requested.  More importantly, replacement is deferred until every selected
 # source has been fetched, validated and installed successfully.
-replace_existing=no
+# Empty means no explicit choice: interactive runs ask, others keep.
+replace_existing=""
 declare -A source_dirs component_commits component_names
 stage_dir=""
 
@@ -63,7 +66,7 @@ Caelestia Shell 本体始终安装；未指定可选组件时显示交互式选�
   --skip-shell             不重新部署 Shell（供更新器内部使用）
   --no-reapply-zh          刷新 Shell 时不自动重新应用已安装的中文化
   --replace-existing       验证并安装成功后，备份并移除现有桌面壳
-  --keep-existing          保留检测到的现有桌面壳（默认）
+  --keep-existing          保留检测到的现有桌面壳（非交互默认；交互模式会询问）
   -h, --help               显示帮助
 EOF
 }
@@ -155,6 +158,16 @@ while (($#)); do
     esac
     shift
 done
+
+# No explicit --replace-existing/--keep-existing: ask in interactive runs so
+# the detected-shell prompt can actually fire; keep silently everywhere else.
+if [[ -z "$replace_existing" ]]; then
+    if [[ -t 0 ]]; then
+        replace_existing=ask
+    else
+        replace_existing=no
+    fi
+fi
 
 if ((${#selected[@]} == 0)); then
     if [[ ! -t 0 ]]; then
@@ -358,8 +371,8 @@ replace_existing_shells() {
             echo "非交互环境请使用 --replace-existing 或 --keep-existing。" >&2
             exit 64
         fi
-        read -r -p "是否备份并替换为 Villode Caelestia？[Y/n] " answer
-        case "${answer:-y}" in
+        read -r -p "是否备份并替换为 Villode Caelestia？[y/N] " answer
+        case "$answer" in
             y|Y|yes|YES) replace_existing=yes ;;
             *) replace_existing=no ;;
         esac
@@ -406,6 +419,8 @@ replace_existing_shells() {
     fi
 
     if [[ -d "$HOME/.config/hypr" ]]; then
+        # noctCall covers Noctalia IPC helper variables ($noctCall) seen in
+        # preset configs; lines that never occur simply do not match.
         while IFS= read -r -d '' config_file; do
             sed -i -E '/noctalia|noctCall|waybar|hyprpanel|nwg-(panel|dock)|ironbar|(^|[[:space:]])ags([[:space:]]|$)|(^|[[:space:]])eww([[:space:]]|$)/Id' "$config_file"
         done < <(find "$HOME/.config/hypr" -type f \
@@ -461,7 +476,7 @@ fetch_component() {
 }
 
 validate_component_source() {
-    local id="$1" source_dir="${source_dirs[$1]}" required
+    local id="$1" source_dir="${source_dirs[$1]}" required required_path
     case "$id" in
         shell)
             required=(install-villode.sh uninstall-villode.sh shell.qml UPSTREAM_VERSION assets components i18n modules services utils)
@@ -900,7 +915,7 @@ stop_caelestia_shell() {
 # can exit 0 with "already running" while the old process is still shutting
 # down; if that old process then exits, the desktop is left without a shell.
 restart_caelestia_shell() {
-    local log="${1:-/tmp/villode-caelestia-install.log}" attempt out rc=0 deadline attempt_log
+    local log="${1:-$install_log}" attempt out rc=0 deadline attempt_log
 
     : >"$log"
     for attempt in 1 2 3; do
@@ -993,9 +1008,9 @@ if ! $no_start; then
     # Update/install often runs from inside the shell settings UI. The old
     # process may still be exiting while the new start races with -n, so stop,
     # start and verify with retries instead of a single fire-and-forget launch.
-    restart_caelestia_shell /tmp/villode-caelestia-install.log || {
+    restart_caelestia_shell "$install_log" || {
         echo "组件已安装，但 Caelestia 自动启动失败。" >&2
-        echo "日志：/tmp/villode-caelestia-install.log" >&2
+        echo "日志：$install_log" >&2
         exit 70
     }
     if [[ " ${selected[*]} " == *" dock "* ]]; then

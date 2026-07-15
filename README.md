@@ -13,6 +13,7 @@
 | Dock | macOS 风格 Dock、实时毛玻璃、拖放固定 | [villode-dock](https://github.com/Villode/villode-dock) |
 | Desktop | 静态图片、视频和 HTML 桌面层 | [villode-desktop](https://github.com/Villode/villode-desktop) |
 | Launcher | macOS 风格应用启动台，与 Dock 拖放联动 | [villode-launcher](https://github.com/Villode/villode-launcher) |
+| 指针放大 | Mac 风格晃动定位指针（cursor） | 随 [caelestia-shell](https://github.com/Villode/caelestia-shell) 的 `contrib/villode-cursor` 提供 |
 
 安装器通过 `components.tsv` 锁定 Shell 和每个可选组件的提交版本。上游更新不会自动进入安装渠道，必须先同步到 `caelestia-shell` 的 `villode` 分支，完成翻译目录和组合测试后再更新锁定提交。
 
@@ -53,6 +54,8 @@ cd villode-caelestia
 ```bash
 ./install.sh --all --replace-existing
 ```
+
+交互式安装检测到现有桌面壳时会询问是否替换（默认保留）；非交互环境不加 `--replace-existing` 时始终保留。
 
 替换流程会先备份相关用户配置和 Hyprland 配置，再停止旧 Shell、仅移除冲突软件包。
 作为 Quickshell 提供者的 `noctalia-qs` 会保留，避免更新中断时留下不可用的 Shell。备份位置会记录在
@@ -116,7 +119,7 @@ villode-caelestia-update --check
 villode-caelestia-update
 ```
 
-“需要修复”表示状态记录缺失、文件不完整，或者 Shell 的真实 revision 与记录不一致。更新器会重新部署对应组件并重建可信的版本记录。离线安装会默认离线检查；需要恢复在线渠道时可使用 `villode-caelestia-update --online`。
+“需要修复”表示状态记录缺失、文件不完整，或者 Shell 的真实 revision 与记录不一致。更新器会重新部署对应组件并重建可信的版本记录。更新默认只同步已安装的组件；要顺带安装“未安装”状态的可选组件，使用 `villode-caelestia-update --install-missing`。离线安装会默认离线检查；需要恢复在线渠道时可使用 `villode-caelestia-update --online`。
 
 虚拟机从旧桌面到纯净 Villode 环境的完整测试步骤见
 [`VM-TESTING.zh-CN.md`](VM-TESTING.zh-CN.md)。
@@ -140,6 +143,8 @@ villode-caelestia-uninstall --all
 ```bash
 villode-caelestia-uninstall --components dock,launcher --purge
 ```
+
+可卸载的组件为 `shell,zh,dock,desktop,launcher,cursor`。
 
 默认卸载不会删除组件用户数据。中文化卸载也不会自动删除 `~/.config/quickshell/caelestia`，避免误删用户自行修改的 QML。
 部分卸载会按剩余组件重建独立会话的自启动项。全部卸载会移除更新/卸载命令并恢复安装前的注销命令，但会保留 `migration-backups` 和 `desktop-migration.txt`，以便恢复旧桌面。
