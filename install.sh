@@ -494,7 +494,7 @@ install_session_dependencies() {
             xdg-desktop-portal-gtk polkit-gnome pipewire wireplumber \
             networkmanager uwsm \
             gtk3 gtk4 gtk4-layer-shell gtk-layer-shell \
-            libadwaita adwaita-icon-theme hicolor-icon-theme \
+            libadwaita adwaita-icon-theme hicolor-icon-theme papirus-icon-theme \
             qt6-base qt6-declarative qt6-svg qt6-wayland \
             python python-gobject python-cairo \
             sddm
