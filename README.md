@@ -30,7 +30,7 @@
 - 独立会话由 UWSM 管理；注销按钮执行 `villode-logout`（先停 Shell 守护，再 `uwsm stop`），有序返回登录管理器
 - 无桌面/最小系统也会尽量补齐：`hyprland`、`sddm`、**GTK3/GTK4**、`gtk4-layer-shell`、Qt6、音频与门户
 - 日常应用（可按系统已有包智能跳过）：终端（alacritty）、文件管理（thunar）、播放器（mpv）、看图（imv/loupe）、浏览器（优先 google-chrome，否则 firefox）
-- 中文：`fcitx5` + 拼音 + 中文字体；环境变量写入会话与 `~/.config/environment.d`
+- 中文：`fcitx5` + 拼音 + 中文字体。Wayland 上**不**设置 `GTK_IM_MODULE`（走 text-input-v3）；`~/.config/uwsm/env` 会 `unset GTK_IM_MODULE` 清掉 user@ 残留；会话里 `dbus-update-activation-environment` 不用 `--all`
 - 默认应用写入 `~/.config/caelestia/shell.json` 的 `general.apps`（**仅在缺失或无效时**），并同步 `mimeapps.list`；用户在设置里改过的不会被覆盖
 - Super+Return / Dock 等读取 Caelestia「默认应用」中的真实系统命令（不是 villode-* 包装名）
 - Arch 系统没有 `yay`/`paru` 时，会自动安装 `base-devel`、`git` 和 `yay-bin`

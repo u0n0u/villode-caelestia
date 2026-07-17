@@ -579,17 +579,32 @@ install_language_dependencies() {
 }
 
 configure_chinese_input() {
-    local env_dir conf profile_dir
+    local env_dir conf profile_dir uwsm_dir
     env_dir="$HOME/.config/environment.d"
     conf="$env_dir/90-villode-fcitx5.conf"
     mkdir -p "$env_dir"
+    # On Wayland, do NOT set GTK_IM_MODULE — let GTK use the Wayland IM protocol
+    # (text-input-v3) via fcitx5. See: https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland
     cat > "$conf" <<'EOF'
 # Managed by Villode Caelestia — Chinese input (fcitx5)
-GTK_IM_MODULE=fcitx
+# GTK_IM_MODULE intentionally unset on Wayland (use text-input-v3 frontend)
 QT_IM_MODULE=fcitx
 QT_IM_MODULES=wayland;fcitx;ibus
 XMODIFIERS=@im=fcitx
 SDL_IM_MODULE=fcitx
+EOF
+    # UWSM prepare-env sources these; `unset` clears a stale GTK_IM_MODULE left in
+    # the long-lived user@ manager after a previous session that set it.
+    uwsm_dir="$HOME/.config/uwsm"
+    mkdir -p "$uwsm_dir"
+    cat > "$uwsm_dir/env" <<'EOF'
+# Managed by Villode — Fcitx5 on Wayland
+# See: https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland
+unset GTK_IM_MODULE
+EOF
+    cat > "$uwsm_dir/env-hyprland" <<'EOF'
+# Managed by Villode — Fcitx5 on Wayland (Hyprland)
+unset GTK_IM_MODULE
 EOF
     # Minimal fcitx5 profile so pinyin is available out of the box.
     profile_dir="$HOME/.config/fcitx5"
