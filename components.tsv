@@ -1,7 +1,7 @@
 # id	repository	commit	name
 shell	https://github.com/u0n0u/caelestia-shell.git	d3c1ed50c15eef72cd89e983802b7d71a852232e	Villode Caelestia Shell
 zh	https://github.com/u0n0u/caelestia-zh-cn.git	f1f3f166f3115754fe4abb94ea63dd137c22616f	Caelestia 简体中文
-dock	https://github.com/u0n0u/villode-dock.git	8e9fe9120b03187c7d150ac25df9eb2648b0c5a9	Villode Dock
+dock	https://github.com/u0n0u/villode-dock.git	11f28565d794eacb533d8355396d73e1c7a0ea12	Villode Dock
 desktop	https://github.com/u0n0u/villode-desktop.git	efa8384f0e1ec614cdd95f18bb07b31e77dc6b2d	Villode Desktop
 launcher	https://github.com/u0n0u/villode-launcher.git	886e371f9ff769f7b784fdafa651842fdc14ee1c	Villode Launcher
 cursor	https://github.com/u0n0u/caelestia-shell.git	d3c1ed50c15eef72cd89e983802b7d71a852232e	Villode 指针放大
