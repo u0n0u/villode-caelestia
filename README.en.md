@@ -116,14 +116,17 @@ Rules:
 
 Change defaults anytime in **Settings → default apps**; reinstall will respect your choices.
 
-## Chinese input
+## Chinese input (Wayland / fcitx5)
 
 When Chinese UI or a full session is installed:
 
 - Packages: `fcitx5`, `fcitx5-chinese-addons`, gtk/qt modules, CJK fonts  
-- Env: `~/.config/environment.d/90-villode-fcitx5.conf` and Villode Hyprland `env = …`  
-- Autostart: `fcitx5 -d` in the session  
-- Log out/in once for environment.d to apply system-wide  
+- Env written by installer:
+  - `~/.config/environment.d/90-villode-fcitx5.conf` — `QT_IM_MODULE` / `XMODIFIERS` / `SDL_IM_MODULE` only (**no `GTK_IM_MODULE`**)
+  - `~/.config/uwsm/env` and `env-hyprland` — `unset GTK_IM_MODULE` so a previous session’s value does not stick in `user@`
+  - Hyprland session: same vars; starts `env -u GTK_IM_MODULE fcitx5 -d`
+- Session uses an explicit `dbus-update-activation-environment` list, **not** `--all` (which would re-export a stale `GTK_IM_MODULE` from the compositor process)
+- After install, a full logout (or reboot from TTY) is better than only restarting the compositor if IM env still looks wrong
 
 ## Updates
 
