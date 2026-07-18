@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Compatibility shim: route former Swappy calls to Villode screenshot editor.
+set -euo pipefail
+
+EDITOR="${VILLODE_SCREENSHOT_EDITOR:-$HOME/.local/bin/villode-screenshot-editor}"
+file=""
+output=""
+from_stdin=0
+
+while (($#)); do
+  case "$1" in
+    -f|--file)
+      if (($# < 2)); then
+        echo "swappy shim: -f requires a path" >&2
+        exit 2
+      fi
+      file="$2"
+      shift 2
+      ;;
+    -o|--output-file)
+      output="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Villode screenshot editor (swappy-compatible shim)
+  -f, --file PATH   image to edit (- for stdin)
+  -o, --output-file ignored (use Save in the editor)
+EOF
+      exit 0
+      ;;
+    -v|--version)
+      echo "villode-screenshot-editor (swappy shim)"
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$file" ]]; then
+  echo "swappy shim: missing -f <path>" >&2
+  exit 2
+fi
+
+tmp=""
+cleanup() {
+  if [[ -n "${tmp:-}" && -f "$tmp" ]]; then
+    rm -f "$tmp"
+  fi
+}
+trap cleanup EXIT
+
+if [[ "$file" == "-" ]]; then
+  tmp="$(mktemp --suffix=.png /tmp/villode-ss-stdin-XXXXXX)"
+  cat >"$tmp"
+  file="$tmp"
+fi
+
+if [[ ! -f "$file" ]]; then
+  echo "swappy shim: file not found: $file" >&2
+  exit 1
+fi
+
+# Detach so callers that wait on swappy don't block the shell UI
+if [[ -x "$EDITOR" ]]; then
+  exec "$EDITOR" "$file"
+fi
+
+# Fallback to real swappy if editor missing
+if [[ -x /usr/bin/swappy ]]; then
+  if [[ -n "$tmp" ]]; then
+    exec /usr/bin/swappy -f "$file"
+  fi
+  exec /usr/bin/swappy -f "$file"
+fi
+
+echo "swappy shim: no editor available" >&2
+exit 1

@@ -1328,7 +1328,8 @@ install_release_files() {
         for file in villode-hyprland.conf start-villode-hyprland \
             villode-hyprland-compositor villode-hyprland.desktop \
             villode-terminal villode-explorer villode-caelestia-shell-guard \
-            villode-logout villode-system-update villode-datetime; do
+            villode-logout villode-system-update villode-datetime \
+            villode-screenshot-editor swappy-villode; do
             [[ -f "$repo_dir/session/$file" ]] || continue
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
@@ -1344,6 +1345,10 @@ install_release_files() {
             chmod 755 "$release_dir/session/villode-system-update"
         [[ -f "$release_dir/session/villode-datetime" ]] && \
             chmod 755 "$release_dir/session/villode-datetime"
+        [[ -f "$release_dir/session/villode-screenshot-editor" ]] && \
+            chmod 755 "$release_dir/session/villode-screenshot-editor"
+        [[ -f "$release_dir/session/swappy-villode" ]] && \
+            chmod 755 "$release_dir/session/swappy-villode"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
@@ -1363,6 +1368,14 @@ install_release_files() {
     if [[ -f "$repo_dir/session/villode-datetime" ]]; then
         install -Dm755 "$repo_dir/session/villode-datetime" \
             "$HOME/.local/bin/villode-datetime"
+    fi
+    if [[ -f "$repo_dir/session/villode-screenshot-editor" ]]; then
+        install -Dm755 "$repo_dir/session/villode-screenshot-editor" \
+            "$HOME/.local/bin/villode-screenshot-editor"
+    fi
+    if [[ -f "$repo_dir/session/swappy-villode" ]]; then
+        install -Dm755 "$repo_dir/session/swappy-villode" \
+            "$HOME/.local/bin/swappy"
     fi
     if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
         # PATH-installed update.sh lives outside the release tree; keep the

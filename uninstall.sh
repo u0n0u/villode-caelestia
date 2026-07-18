@@ -275,6 +275,7 @@ if ! any_component_installed; then
     if [[ -x "$HOME/.local/bin/villode-caelestia-shell-guard" ]]; then
         "$HOME/.local/bin/villode-caelestia-shell-guard" stop >/dev/null 2>&1 || true
     fi
+    pkill -f 'villode-screenshot-editor --daemon' >/dev/null 2>&1 || true
     rm -f "$HOME/.local/bin/villode-caelestia-uninstall" \
         "$HOME/.local/bin/villode-caelestia-update" \
         "$HOME/.local/bin/villode-caelestia-shell-guard" \
@@ -282,7 +283,14 @@ if ! any_component_installed; then
         "$HOME/.local/bin/villode-system-update" \
         "$HOME/.local/bin/villode-datetime" \
         "$HOME/.local/bin/villode-terminal" \
-        "$HOME/.local/bin/villode-explorer"
+        "$HOME/.local/bin/villode-explorer" \
+        "$HOME/.local/bin/villode-screenshot-editor"
+    # Only remove swappy if it is our PATH shim, never a real package binary.
+    if [[ -f "$HOME/.local/bin/swappy" ]] &&
+       grep -q 'Villode screenshot editor (swappy-compatible shim)' \
+           "$HOME/.local/bin/swappy" 2>/dev/null; then
+        rm -f "$HOME/.local/bin/swappy"
+    fi
     # The outer flock process still owns the unlinked inode until this script
     # exits, so removing the pathname here cannot release protection early.
     rm -f "$state_home/operation.lock"

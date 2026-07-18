@@ -1,0 +1,1499 @@
+#!/usr/bin/env python3
+"""Villode Screenshot Editor — QQ/WeChat style floating overlay (not a dialog window)."""
+from __future__ import annotations
+
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+
+try:
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk4LayerShell as LayerShell
+
+    HAS_LAYER = True
+except Exception:
+    HAS_LAYER = False
+
+SAVE_DIR = Path(os.path.expanduser(os.environ.get("VILLODE_SCREENSHOT_DIR", "~/Pictures/Screenshots")))
+SCHEME_PATH = Path.home() / ".local/state/caelestia/scheme.json"
+MIN_SHAPE = 4
+
+INK_COLORS = [
+    "#FA746F",
+    "#FB8C00",
+    "#FDD835",
+    "#66BB6A",
+    "#42A5F5",
+    "#AB47BC",
+    "#FFFFFF",
+    "#212121",
+]
+
+TOOLS = [
+    ("pen", "画笔"),
+    ("rect", "矩形"),
+    ("ellipse", "椭圆"),
+    ("arrow", "箭头"),
+    ("text", "文字"),
+    ("mosaic", "马赛克"),
+    ("eraser", "橡皮"),
+]
+
+
+def load_theme() -> dict[str, str]:
+    defaults = {
+        "background": "0b0e11",
+        "surface": "0b0e11",
+        "surfaceContainer": "151a1f",
+        "surfaceContainerHigh": "1b2025",
+        "surfaceContainerHighest": "20262c",
+        "onSurface": "e0e6ee",
+        "onSurfaceVariant": "a5acb3",
+        "outline": "70767d",
+        "outlineVariant": "42494f",
+        "primary": "a9cae8",
+        "onPrimary": "22435c",
+        "primaryContainer": "35566f",
+        "error": "fa746f",
+        "shadow": "000000",
+    }
+    try:
+        data = json.loads(SCHEME_PATH.read_text())
+        colours = data.get("colours") or data.get("colors") or {}
+        for k in defaults:
+            if k in colours and colours[k]:
+                defaults[k] = str(colours[k]).lstrip("#")
+    except Exception:
+        pass
+    return defaults
+
+
+def hx(c: str) -> str:
+    c = str(c).lstrip("#")
+    return f"#{c}"
+
+
+def parse_color(hex_color: str) -> tuple[float, float, float]:
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+@dataclass
+class Stroke:
+    tool: str
+    color: str
+    width: float
+    points: list[tuple[float, float]] = field(default_factory=list)
+    text: str = ""
+    mosaic: int = 12
+    angle: float = 0.0  # radians
+    flip_h: bool = False
+    flip_v: bool = False
+
+
+class Editor(Gtk.ApplicationWindow):
+    def __init__(self, app: Gtk.Application, image_path: Path):
+        super().__init__(application=app, title="截图")
+        self.theme = load_theme()
+        self.image_path = image_path
+        self.pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(image_path))
+        self.img_w = self.pixbuf.get_width()
+        self.img_h = self.pixbuf.get_height()
+
+        self.tool = "pen"
+        self.color = INK_COLORS[0]
+        self.line_width = 3.0
+        self.strokes: list[Stroke] = []
+        self.redo_stack: list[Stroke] = []
+        self.current: Stroke | None = None
+        self.drawing = False
+        self._dirty = False
+
+        self.zoom = 1.0
+        self.min_zoom = 0.15
+        self.max_zoom = 6.0
+        self._panning = False
+        self._pan_origin: tuple[float, float] | None = None
+        self._pan_scroll0: tuple[float, float] = (0.0, 0.0)
+        self._space_down = False
+        self._moving: Stroke | None = None
+        self._move_last: tuple[float, float] | None = None
+        self._selected: Stroke | None = None
+        self.text_popover: Gtk.Popover | None = None
+        self.tool_buttons: dict[str, Gtk.Button] = {}
+        self.color_buttons: dict[str, Gtk.Button] = {}
+        self.width_buttons: dict[float, Gtk.Button] = {}
+
+        # Overlay window — not a normal dialog
+        self.set_decorated(False)
+        self.set_resizable(True)
+        self.set_default_size(1, 1)
+        try:
+            self.set_handle_menubar_accel(False)
+        except Exception:
+            pass
+
+        self._setup_shell()
+        self._apply_css()
+
+        # Full-bleed root: dim scrim + centered card
+        root = Gtk.Overlay()
+        root.add_css_class("overlay-root")
+        self.set_child(root)
+
+        scrim = Gtk.Box()
+        scrim.set_hexpand(True)
+        scrim.set_vexpand(True)
+        scrim.add_css_class("scrim")
+        root.set_child(scrim)
+
+        # Click scrim empty area → close (like dismissing overlay)
+        scrim_click = Gtk.GestureClick()
+        scrim_click.set_button(1)
+        scrim_click.connect("pressed", lambda *_: self.close())
+        scrim.add_controller(scrim_click)
+
+        # Center stage
+        center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        center.set_halign(Gtk.Align.CENTER)
+        center.set_valign(Gtk.Align.CENTER)
+        center.set_margin_start(24)
+        center.set_margin_end(24)
+        center.set_margin_top(24)
+        center.set_margin_bottom(24)
+        center.add_css_class("stage")
+        root.add_overlay(center)
+
+        # Prevent stage clicks from closing
+        stage_click = Gtk.GestureClick()
+        stage_click.set_button(1)
+        stage_click.connect("pressed", lambda *a: True)
+        center.add_controller(stage_click)
+
+        # Image card
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        card.add_css_class("shot-card")
+        center.append(card)
+
+        self.scroll = Gtk.ScrolledWindow()
+        self.scroll.add_css_class("canvas-scroll")
+        self.scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # Fixed viewport: zoom must NOT grow the card/window.
+        self.scroll.set_propagate_natural_width(False)
+        self.scroll.set_propagate_natural_height(False)
+        self.scroll.set_hexpand(False)
+        self.scroll.set_vexpand(False)
+        self.viewport_w = 640
+        self.viewport_h = 360
+        card.append(self.scroll)
+
+        self.da = Gtk.DrawingArea()
+        self.da.set_content_width(self.img_w)
+        self.da.set_content_height(self.img_h)
+        self.da.set_draw_func(self._draw)
+        self.da.set_focusable(True)
+        self.da.set_cursor(Gdk.Cursor.new_from_name("crosshair"))
+        self.da.set_halign(Gtk.Align.CENTER)
+        self.da.set_valign(Gtk.Align.CENTER)
+        self.scroll.set_child(self.da)
+
+        # Floating toolbar pill under the image (QQ-style)
+        bar_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        bar_wrap.set_halign(Gtk.Align.CENTER)
+        center.append(bar_wrap)
+
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        toolbar.add_css_class("float-bar")
+        toolbar.set_halign(Gtk.Align.CENTER)
+        bar_wrap.append(toolbar)
+
+        # Tools
+        tools_group = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        tools_group.add_css_class("seg")
+        toolbar.append(tools_group)
+        for tid, label in TOOLS:
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("chip")
+            btn.set_focus_on_click(False)
+            btn.set_tooltip_text(label)
+            btn.connect("clicked", self._on_tool_clicked, tid)
+            tools_group.append(btn)
+            self.tool_buttons[tid] = btn
+        self._refresh_tool_styles()
+
+        toolbar.append(self._dot_sep())
+
+        # Colors
+        colors = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        colors.add_css_class("seg")
+        colors.add_css_class("seg-pad")
+        toolbar.append(colors)
+        for hex_c in INK_COLORS:
+            btn = Gtk.Button()
+            btn.add_css_class("color-dot")
+            btn.add_css_class(f"swatch-{hex_c[1:]}")
+            btn.set_focus_on_click(False)
+            btn.set_size_request(18, 18)
+            btn.set_tooltip_text(hex_c)
+            btn.connect("clicked", self._on_color_clicked, hex_c)
+            colors.append(btn)
+            self.color_buttons[hex_c] = btn
+        self._refresh_color_styles()
+
+        toolbar.append(self._dot_sep())
+
+        # Width
+        widths = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        widths.add_css_class("seg")
+        toolbar.append(widths)
+        for w, label in ((2.0, "细"), (3.5, "中"), (6.0, "粗"), (10.0, "特粗")):
+            b = Gtk.Button(label=label)
+            b.add_css_class("chip")
+            b.add_css_class("chip-sm")
+            b.set_focus_on_click(False)
+            b.connect("clicked", self._on_width_clicked, w)
+            widths.append(b)
+            self.width_buttons[w] = b
+        self._refresh_width_styles()
+
+        toolbar.append(self._dot_sep())
+
+        # Zoom
+        zoom = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        zoom.add_css_class("seg")
+        toolbar.append(zoom)
+        for label, handler, tip in (
+            ("−", self.zoom_out, "缩小"),
+            ("适合", self.zoom_fit, "适合屏幕"),
+            ("+", self.zoom_in, "放大"),
+        ):
+            b = Gtk.Button(label=label)
+            b.add_css_class("chip")
+            b.add_css_class("chip-sm")
+            b.set_tooltip_text(tip)
+            b.set_focus_on_click(False)
+            b.connect("clicked", lambda _btn, h=handler: h())
+            zoom.append(b)
+        self.zoom_label = Gtk.Label(label="100%")
+        self.zoom_label.add_css_class("zoom-label")
+        zoom.append(self.zoom_label)
+
+        # Second row: history + actions (keeps bar from overflowing)
+        row2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row2.set_halign(Gtk.Align.CENTER)
+        row2.add_css_class("float-bar")
+        row2.add_css_class("float-bar-actions")
+        bar_wrap.append(row2)
+
+        hist = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        hist.add_css_class("seg")
+        row2.append(hist)
+        for label, cb, tip in (
+            ("撤销", self.undo, "Ctrl+Z"),
+            ("重做", self.redo, "Ctrl+Y"),
+            ("清空", self.clear_all, "清除全部标注"),
+        ):
+            b = Gtk.Button(label=label)
+            b.add_css_class("chip")
+            b.set_tooltip_text(tip)
+            b.set_focus_on_click(False)
+            b.connect("clicked", lambda _btn, c=cb: c())
+            hist.append(b)
+
+        xform = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        xform.add_css_class("seg")
+        row2.append(xform)
+        for label, cb, tip in (
+            ("↺", self.rotate_ccw, "逆时针旋转 15°（选中文字/箭头）"),
+            ("↻", self.rotate_cw, "顺时针旋转 15°"),
+            ("↔", self.flip_horizontal, "水平翻转"),
+            ("↕", self.flip_vertical, "垂直翻转"),
+        ):
+            b = Gtk.Button(label=label)
+            b.add_css_class("chip")
+            b.add_css_class("chip-sm")
+            b.set_tooltip_text(tip)
+            b.set_focus_on_click(False)
+            b.connect("clicked", lambda _btn, c=cb: c())
+            xform.append(b)
+
+        acts = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row2.append(acts)
+
+        copy_btn = Gtk.Button(label="复制")
+        copy_btn.add_css_class("action")
+        copy_btn.add_css_class("action-ghost")
+        copy_btn.set_focus_on_click(False)
+        copy_btn.set_tooltip_text("Ctrl+C")
+        copy_btn.connect("clicked", lambda *_: self.copy_clipboard())
+        acts.append(copy_btn)
+
+        save_btn = Gtk.Button(label="保存")
+        save_btn.add_css_class("action")
+        save_btn.add_css_class("action-ghost")
+        save_btn.set_focus_on_click(False)
+        save_btn.set_tooltip_text("Ctrl+S")
+        save_btn.connect("clicked", lambda *_: self.save_file())
+        acts.append(save_btn)
+
+        done_btn = Gtk.Button(label="完成")
+        done_btn.add_css_class("action")
+        done_btn.add_css_class("action-primary")
+        done_btn.set_focus_on_click(False)
+        done_btn.set_tooltip_text("复制并关闭 · Enter")
+        done_btn.connect("clicked", lambda *_: self.finish())
+        acts.append(done_btn)
+
+        close_btn = Gtk.Button(label="取消")
+        close_btn.add_css_class("action")
+        close_btn.add_css_class("action-muted")
+        close_btn.set_focus_on_click(False)
+        close_btn.set_tooltip_text("Esc")
+        close_btn.connect("clicked", lambda *_: self.close())
+        acts.append(close_btn)
+
+        # Controllers
+        click = Gtk.GestureClick()
+        click.set_button(1)
+        click.connect("pressed", self._on_press)
+        click.connect("released", self._on_release)
+        self.da.add_controller(click)
+
+        # Middle + right button pan the canvas
+        for btn in (2, 3):
+            pan = Gtk.GestureClick()
+            pan.set_button(btn)
+            pan.connect("pressed", self._on_pan_press)
+            pan.connect("released", self._on_pan_release)
+            self.da.add_controller(pan)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_motion)
+        self.da.add_controller(motion)
+
+        # Wheel zoom: capture on both scroll viewport and canvas so ScrolledWindow
+        # does not swallow the event as a pan.
+        for host in (self.scroll, self.da):
+            scroll_c = Gtk.EventControllerScroll()
+            scroll_c.set_flags(Gtk.EventControllerScrollFlags.VERTICAL)
+            try:
+                scroll_c.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            except Exception:
+                pass
+            scroll_c.connect("scroll", self._on_scroll)
+            host.add_controller(scroll_c)
+
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_key)
+        key.connect("key-released", self._on_key_release)
+        self.add_controller(key)
+
+        self.present()
+        # Layout on next idle — no hyprctl (Hypr windowrules already pin fullscreen)
+        GLib.idle_add(self._initial_layout)
+
+    def _setup_shell(self) -> None:
+        """Undecorated fullscreen overlay (layer-shell if available)."""
+        self._layer = False
+        if HAS_LAYER and LayerShell.is_supported():
+            LayerShell.init_for_window(self)
+            LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+            LayerShell.set_anchor(self, LayerShell.Edge.TOP, True)
+            LayerShell.set_anchor(self, LayerShell.Edge.BOTTOM, True)
+            LayerShell.set_anchor(self, LayerShell.Edge.LEFT, True)
+            LayerShell.set_anchor(self, LayerShell.Edge.RIGHT, True)
+            LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.EXCLUSIVE)
+            LayerShell.set_namespace(self, "villode-screenshot")
+            self._layer = True
+            return
+
+        # Fallback: undecorated window sized to the monitor (Hypr rules pin/float it)
+        mw, mh = self._monitor_size()
+        self.set_default_size(mw, mh)
+        try:
+            self.fullscreen()
+        except Exception:
+            pass
+
+    def _dot_sep(self) -> Gtk.Label:
+        lab = Gtk.Label(label="·")
+        lab.add_css_class("sep-dot")
+        return lab
+
+    def _apply_css(self) -> None:
+        t = self.theme
+        bg = hx(t["background"])
+        surf = hx(t["surfaceContainer"])
+        high = hx(t["surfaceContainerHigh"])
+        highest = hx(t["surfaceContainerHighest"])
+        on = hx(t["onSurface"])
+        muted = hx(t["onSurfaceVariant"])
+        outline = hx(t["outlineVariant"])
+        primary = hx(t["primary"])
+        on_primary = hx(t["onPrimary"])
+        primary_c = hx(t["primaryContainer"])
+
+        swatch_css = "\n".join(
+            f"""
+            button.color-dot.swatch-{c[1:]} {{
+                background: {c};
+                background-color: {c};
+            }}
+            """
+            for c in INK_COLORS
+        )
+
+        css = f"""
+        window {{
+            background: transparent;
+        }}
+        .overlay-root {{
+            background: transparent;
+        }}
+        .scrim {{
+            background: alpha(black, 0.55);
+        }}
+        .stage {{
+            background: transparent;
+        }}
+        .shot-card {{
+            background: {highest};
+            border-radius: 14px;
+            border: 1px solid alpha({outline}, 0.9);
+            box-shadow: 0 18px 50px alpha(black, 0.45);
+            padding: 6px;
+        }}
+        .canvas-scroll {{
+            background: {bg};
+            border-radius: 10px;
+            min-width: 120px;
+            min-height: 80px;
+        }}
+        .float-bar {{
+            background: alpha({surf}, 0.96);
+            border-radius: 14px;
+            padding: 6px 8px;
+            border: 1px solid alpha({outline}, 0.95);
+            box-shadow: 0 10px 28px alpha(black, 0.35);
+        }}
+        .float-bar-actions {{
+            padding: 6px 10px;
+        }}
+        .seg {{
+            background: {high};
+            border-radius: 10px;
+            padding: 2px;
+        }}
+        .seg-pad {{
+            padding: 6px 8px;
+        }}
+        button.chip {{
+            background: transparent;
+            color: {muted};
+            border: none;
+            border-radius: 8px;
+            padding: 6px 11px;
+            min-height: 28px;
+            font-size: 12px;
+            font-weight: 500;
+            box-shadow: none;
+        }}
+        button.chip:hover {{
+            background: alpha({on}, 0.08);
+            color: {on};
+        }}
+        button.chip.active {{
+            background: {primary_c};
+            color: {primary};
+            font-weight: 600;
+        }}
+        button.chip-sm {{
+            padding: 6px 9px;
+            min-width: 34px;
+        }}
+        button.color-dot {{
+            border-radius: 999px;
+            min-width: 16px;
+            min-height: 16px;
+            padding: 0;
+            border: 2px solid alpha({on}, 0.12);
+            box-shadow: none;
+        }}
+        button.color-dot:hover {{
+            border-color: alpha({on}, 0.4);
+        }}
+        button.color-dot.active {{
+            border: 2px solid {primary};
+            box-shadow: 0 0 0 2px alpha({primary}, 0.35);
+        }}
+        button.action {{
+            border-radius: 9px;
+            padding: 7px 14px;
+            min-height: 30px;
+            font-size: 12.5px;
+            font-weight: 600;
+            border: none;
+            box-shadow: none;
+        }}
+        button.action-primary {{
+            background: {primary};
+            color: {on_primary};
+        }}
+        button.action-primary:hover {{
+            filter: brightness(1.08);
+        }}
+        button.action-ghost {{
+            background: {highest};
+            color: {on};
+            border: 1px solid {outline};
+        }}
+        button.action-ghost:hover {{
+            background: alpha({on}, 0.08);
+        }}
+        button.action-muted {{
+            background: transparent;
+            color: {muted};
+        }}
+        button.action-muted:hover {{
+            color: {on};
+            background: alpha({on}, 0.06);
+        }}
+        .zoom-label {{
+            color: {muted};
+            font-size: 11.5px;
+            min-width: 40px;
+            margin-left: 4px;
+            margin-right: 4px;
+        }}
+        .sep-dot {{
+            color: alpha({muted}, 0.55);
+            margin-left: 2px;
+            margin-right: 2px;
+            font-size: 14px;
+        }}
+        {swatch_css}
+        """.encode()
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+    def _refresh_tool_styles(self) -> None:
+        for tid, btn in self.tool_buttons.items():
+            if tid == self.tool:
+                btn.add_css_class("active")
+            else:
+                btn.remove_css_class("active")
+
+    def _refresh_color_styles(self) -> None:
+        for c, btn in self.color_buttons.items():
+            if c == self.color:
+                btn.add_css_class("active")
+            else:
+                btn.remove_css_class("active")
+
+    def _refresh_width_styles(self) -> None:
+        nearest = min(self.width_buttons.keys(), key=lambda w: abs(w - self.line_width))
+        for w, btn in self.width_buttons.items():
+            if w == nearest:
+                btn.add_css_class("active")
+            else:
+                btn.remove_css_class("active")
+
+    def _on_tool_clicked(self, _btn: Gtk.Button, tid: str) -> None:
+        self.tool = tid
+        self._refresh_tool_styles()
+        self._update_cursor()
+
+    def _on_color_clicked(self, _btn: Gtk.Button, hex_c: str) -> None:
+        self.color = hex_c
+        self._refresh_color_styles()
+
+    def _on_width_clicked(self, _btn: Gtk.Button, w: float) -> None:
+        self.line_width = w
+        self._refresh_width_styles()
+
+    def _monitor_size(self) -> tuple[int, int]:
+        disp = Gdk.Display.get_default()
+        if not disp:
+            return 1920, 1080
+        mon = disp.get_monitors().get_item(0)
+        if mon:
+            g = mon.get_geometry()
+            return g.width, g.height
+        return 1920, 1080
+
+    def _initial_layout(self) -> bool:
+        mw, mh = self._monitor_size()
+        # leave room for floating bars (~140px) and margins
+        max_w = int(mw * 0.88)
+        max_h = int(mh * 0.72)
+        # Viewport is fixed once at open; later zoom only changes canvas content.
+        fit_z = min(max_w / max(1, self.img_w), max_h / max(1, self.img_h), 1.0)
+        self.zoom = max(self.min_zoom, fit_z * 0.98)
+        self.viewport_w = max(160, min(int(self.img_w * self.zoom), max_w))
+        self.viewport_h = max(120, min(int(self.img_h * self.zoom), max_h))
+        self.scroll.set_size_request(self.viewport_w, self.viewport_h)
+        self._apply_zoom_geometry()
+        if not self._layer:
+            self.fullscreen()
+        return False
+
+
+    def _update_zoom_label(self) -> None:
+        self.zoom_label.set_text(f"{int(round(self.zoom * 100))}%")
+
+    def _apply_zoom_geometry(self) -> None:
+        # Only resize the drawing surface; keep scroll viewport fixed.
+        self.da.set_content_width(max(1, int(self.img_w * self.zoom)))
+        self.da.set_content_height(max(1, int(self.img_h * self.zoom)))
+        if getattr(self, "viewport_w", 0) > 0 and getattr(self, "viewport_h", 0) > 0:
+            self.scroll.set_size_request(self.viewport_w, self.viewport_h)
+        self._update_zoom_label()
+        self.da.queue_draw()
+
+    def set_zoom(self, z: float, anchor: tuple[float, float] | None = None) -> None:
+        z = max(self.min_zoom, min(self.max_zoom, z))
+        if abs(z - self.zoom) < 1e-6:
+            return
+        old = self.zoom
+        hadj = self.scroll.get_hadjustment()
+        vadj = self.scroll.get_vadjustment()
+        # Anchor is DrawingArea content coords (same as event x/y on da).
+        if anchor is not None and old > 1e-6:
+            ax, ay = anchor
+            ix = ax / old
+            iy = ay / old
+            vx = ax - (hadj.get_value() if hadj else 0.0)
+            vy = ay - (vadj.get_value() if vadj else 0.0)
+        else:
+            ix = iy = vx = vy = None  # type: ignore
+
+        self.zoom = z
+        self._apply_zoom_geometry()
+
+        if ix is not None and hadj is not None and vadj is not None:
+            nx = ix * z
+            ny = iy * z
+            max_x = max(0.0, hadj.get_upper() - hadj.get_page_size())
+            max_y = max(0.0, vadj.get_upper() - vadj.get_page_size())
+            hadj.set_value(max(0.0, min(max_x, nx - vx)))
+            vadj.set_value(max(0.0, min(max_y, ny - vy)))
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self.zoom * 1.15)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self.zoom / 1.15)
+
+    def zoom_fit(self) -> None:
+        # Refit image into the existing fixed viewport (do not grow window).
+        vw = max(1, getattr(self, "viewport_w", 640))
+        vh = max(1, getattr(self, "viewport_h", 360))
+        z = min(vw / max(1, self.img_w), vh / max(1, self.img_h), 1.0)
+        self.set_zoom(max(self.min_zoom, z * 0.98))
+
+    def _on_scroll(self, controller: Gtk.EventControllerScroll, _dx: float, dy: float) -> bool:
+        if dy == 0:
+            return False
+        # Zoom toward pointer when possible
+        anchor = None
+        try:
+            widget = controller.get_widget()
+            # Prefer last known pointer on drawing area
+            if widget is self.da and hasattr(self, "_last_pointer"):
+                anchor = self._last_pointer
+            elif widget is self.scroll and hasattr(self, "_last_pointer"):
+                # convert viewport-ish: last_pointer already in da content coords
+                anchor = self._last_pointer
+        except Exception:
+            anchor = None
+        factor = 1.12 if dy < 0 else 1 / 1.12
+        self.set_zoom(self.zoom * factor, anchor=anchor)
+        return True
+
+    def _view_to_img(self, x: float, y: float) -> tuple[float, float]:
+        z = self.zoom if self.zoom > 1e-6 else 1.0
+        return (
+            max(0.0, min(self.img_w - 1, x / z)),
+            max(0.0, min(self.img_h - 1, y / z)),
+        )
+
+    def _viewport_pos(self, x: float, y: float) -> tuple[float, float]:
+        """DrawingArea event → viewport-relative pos (stable when only scroll changes)."""
+        hadj = self.scroll.get_hadjustment()
+        vadj = self.scroll.get_vadjustment()
+        hx = float(hadj.get_value()) if hadj else 0.0
+        hy = float(vadj.get_value()) if vadj else 0.0
+        return (float(x) - hx, float(y) - hy)
+
+    def _begin_pan(self, x: float, y: float) -> None:
+        """Pan with viewport-relative origin so scroll feedback cannot jitter."""
+        self._panning = True
+        self._moving = None
+        self.drawing = False
+        self.current = None
+        hadj = self.scroll.get_hadjustment()
+        vadj = self.scroll.get_vadjustment()
+        self._pan_scroll0 = (
+            float(hadj.get_value()) if hadj else 0.0,
+            float(vadj.get_value()) if vadj else 0.0,
+        )
+        # origin in viewport space at press
+        self._pan_origin = (float(x) - self._pan_scroll0[0], float(y) - self._pan_scroll0[1])
+        self.da.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
+
+    def _end_pan(self) -> None:
+        self._panning = False
+        self._pan_origin = None
+        self._update_cursor()
+
+    def _update_cursor(self) -> None:
+        if self.tool == "text":
+            name = "text"
+        elif self.tool == "eraser":
+            name = "cell"
+        else:
+            name = "crosshair"
+        self.da.set_cursor(Gdk.Cursor.new_from_name(name))
+
+    def _on_pan_press(self, _g: Gtk.GestureClick, _n: int, x: float, y: float) -> None:
+        self._begin_pan(x, y)
+
+    def _on_pan_release(self, *_a: Any) -> None:
+        self._end_pan()
+
+    def _stroke_center(self, s: Stroke) -> tuple[float, float]:
+        if not s.points:
+            return (0.0, 0.0)
+        xs = [p[0] for p in s.points]
+        ys = [p[1] for p in s.points]
+        return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+    def _world_to_local(self, s: Stroke, x: float, y: float) -> tuple[float, float]:
+        cx, cy = self._stroke_center(s)
+        x -= cx
+        y -= cy
+        # inverse rotate
+        a = -s.angle
+        cos_a, sin_a = math.cos(a), math.sin(a)
+        x, y = x * cos_a - y * sin_a, x * sin_a + y * cos_a
+        if s.flip_h:
+            x = -x
+        if s.flip_v:
+            y = -y
+        return (x + cx, y + cy)
+
+    def _push_stroke_transform(self, cr: cairo.Context, s: Stroke) -> None:
+        cx, cy = self._stroke_center(s)
+        cr.translate(cx, cy)
+        cr.rotate(s.angle)
+        sx = -1.0 if s.flip_h else 1.0
+        sy = -1.0 if s.flip_v else 1.0
+        if sx != 1.0 or sy != 1.0:
+            cr.scale(sx, sy)
+        cr.translate(-cx, -cy)
+
+    def rotate_cw(self) -> None:
+        self._nudge_selected_angle(math.radians(15))
+
+    def rotate_ccw(self) -> None:
+        self._nudge_selected_angle(-math.radians(15))
+
+    def _nudge_selected_angle(self, delta: float) -> None:
+        s = self._selected
+        if s is None or s not in self.strokes:
+            return
+        if s.tool not in ("text", "arrow", "rect", "ellipse", "pen", "mosaic"):
+            return
+        s.angle = (s.angle + delta) % math.tau
+        self.redo_stack.clear()
+        self._dirty = True
+        self.da.queue_draw()
+
+    def flip_horizontal(self) -> None:
+        s = self._selected
+        if s is None or s not in self.strokes:
+            return
+        s.flip_h = not s.flip_h
+        self.redo_stack.clear()
+        self._dirty = True
+        self.da.queue_draw()
+
+    def flip_vertical(self) -> None:
+        s = self._selected
+        if s is None or s not in self.strokes:
+            return
+        s.flip_v = not s.flip_v
+        self.redo_stack.clear()
+        self._dirty = True
+        self.da.queue_draw()
+
+    def _stroke_bounds(self, s: Stroke) -> tuple[float, float, float, float]:
+        if not s.points:
+            return (0, 0, 0, 0)
+        if s.tool == "text":
+            x, y = s.points[0]
+            # approximate text box for hit testing
+            size = max(12.0, s.width * 5)
+            w = max(24.0, len(s.text) * size * 0.55)
+            h = size * 1.2
+            return (x - 4, y - h, x + w + 4, y + 8)
+        xs = [p[0] for p in s.points]
+        ys = [p[1] for p in s.points]
+        pad = max(8.0, s.width * 2)
+        return (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+
+    def _hit_stroke(self, ix: float, iy: float, tools: set[str] | None = None) -> Stroke | None:
+        for s in reversed(self.strokes):
+            if tools is not None and s.tool not in tools:
+                continue
+            lx, ly = self._world_to_local(s, ix, iy)
+            if s.tool == "text":
+                x1, y1, x2, y2 = self._stroke_bounds(s)
+                if x1 <= lx <= x2 and y1 <= ly <= y2:
+                    return s
+            elif s.tool == "arrow":
+                if len(s.points) < 2:
+                    continue
+                x1, y1 = s.points[0]
+                x2, y2 = s.points[-1]
+                dx, dy = x2 - x1, y2 - y1
+                L2 = dx * dx + dy * dy
+                if L2 < 1e-6:
+                    dist = math.hypot(lx - x1, ly - y1)
+                else:
+                    tt = max(0.0, min(1.0, ((lx - x1) * dx + (ly - y1) * dy) / L2))
+                    px, py = x1 + tt * dx, y1 + tt * dy
+                    dist = math.hypot(lx - px, ly - py)
+                if dist <= max(10.0, s.width * 3):
+                    return s
+            else:
+                x1, y1, x2, y2 = self._stroke_bounds(s)
+                if x1 <= lx <= x2 and y1 <= ly <= y2:
+                    if s.tool == "pen":
+                        thr = max(8.0, s.width * 2.5)
+                        if any(math.hypot(lx - px, ly - py) <= thr for px, py in s.points):
+                            return s
+                    else:
+                        return s
+        return None
+
+    def _translate_stroke(self, s: Stroke, dx: float, dy: float) -> None:
+        s.points = [(px + dx, py + dy) for px, py in s.points]
+
+    def _erase_at(self, ix: float, iy: float) -> bool:
+        hit = self._hit_stroke(ix, iy)
+        if hit is None:
+            return False
+        self.strokes.remove(hit)
+        if self._selected is hit:
+            self._selected = None
+        self.redo_stack.clear()
+        self._dirty = True
+        self.da.queue_draw()
+        return True
+
+    def clear_all(self) -> None:
+        if not self.strokes:
+            return
+        # store as one undo unit by pushing a marker stroke? simpler: push all as one redo bundle
+        self.redo_stack.append(Stroke(tool="__bundle__", color="", width=0, points=[], text=""))
+        # stash previous strokes in a side list on the marker via text json? use points count hack:
+        # Keep a parallel stack for bundles
+        if not hasattr(self, "_bundle_stack"):
+            self._bundle_stack: list[list[Stroke]] = []
+        self._bundle_stack.append(list(self.strokes))
+        self.strokes.clear()
+        self._selected = None
+        self._dirty = True
+        self.da.queue_draw()
+
+    def _on_press(self, _g: Gtk.GestureClick, _n: int, x: float, y: float) -> None:
+        self._last_pointer = (x, y)
+        if self.text_popover and self.text_popover.get_visible():
+            return
+        if self._space_down:
+            self._begin_pan(x, y)
+            return
+
+        ix, iy = self._view_to_img(x, y)
+
+        if self.tool == "eraser":
+            self.drawing = True
+            self._erase_at(ix, iy)
+            return
+
+        # Prefer moving existing text/arrow (topmost hit)
+        hit = self._hit_stroke(ix, iy, tools={"text", "arrow"})
+        if hit is not None and self.tool != "text":
+            self._moving = hit
+            self._selected = hit
+            self._move_last = (ix, iy)
+            self.drawing = False
+            self.current = None
+            self.da.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
+            self.da.queue_draw()
+            return
+
+        self.drawing = True
+        self.redo_stack.clear()
+        self._selected = None
+        self._moving = None
+
+        if self.tool == "text":
+            self.drawing = False
+            self._start_text(ix, iy, x, y)
+            return
+
+        self.current = Stroke(tool=self.tool, color=self.color, width=self.line_width, points=[(ix, iy)])
+        if self.tool == "mosaic":
+            self.current.mosaic = max(6, int(self.line_width * 3))
+        self.da.queue_draw()
+
+    def _on_motion(self, _c: Gtk.EventControllerMotion, x: float, y: float) -> None:
+        self._last_pointer = (x, y)
+
+        if self._panning and self._pan_origin is not None:
+            # event (x,y) is content coords; convert to viewport-relative
+            hadj = self.scroll.get_hadjustment()
+            vadj = self.scroll.get_vadjustment()
+            hx = float(hadj.get_value()) if hadj else 0.0
+            hy = float(vadj.get_value()) if vadj else 0.0
+            cur_vp = (float(x) - hx, float(y) - hy)
+            dx = cur_vp[0] - self._pan_origin[0]
+            dy = cur_vp[1] - self._pan_origin[1]
+            if hadj:
+                max_x = max(0.0, hadj.get_upper() - hadj.get_page_size())
+                hadj.set_value(max(0.0, min(max_x, self._pan_scroll0[0] - dx)))
+            if vadj:
+                max_y = max(0.0, vadj.get_upper() - vadj.get_page_size())
+                vadj.set_value(max(0.0, min(max_y, self._pan_scroll0[1] - dy)))
+            return
+
+        if self._moving is not None and self._move_last is not None:
+            ix, iy = self._view_to_img(x, y)
+            dx = ix - self._move_last[0]
+            dy = iy - self._move_last[1]
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                self._translate_stroke(self._moving, dx, dy)
+                self._move_last = (ix, iy)
+                self._dirty = True
+                self.da.queue_draw()
+            return
+
+        if self.tool == "eraser" and self.drawing:
+            ix, iy = self._view_to_img(x, y)
+            self._erase_at(ix, iy)
+            return
+
+        if not self.drawing or not self.current:
+            return
+        ix, iy = self._view_to_img(x, y)
+        if self.current.tool == "pen":
+            self.current.points.append((ix, iy))
+        else:
+            if len(self.current.points) == 1:
+                self.current.points.append((ix, iy))
+            else:
+                self.current.points[-1] = (ix, iy)
+        self.da.queue_draw()
+
+    def _on_release(self, _g: Gtk.GestureClick, _n: int, x: float, y: float) -> None:
+        if self._panning and not self._space_down:
+            self._end_pan()
+            return
+
+        if self._moving is not None:
+            self.redo_stack.clear()
+            self._moving = None
+            self._move_last = None
+            self._update_cursor()
+            self.da.queue_draw()
+            return
+
+        if self.tool == "eraser":
+            self.drawing = False
+            return
+
+        if not self.drawing or not self.current:
+            self.drawing = False
+            return
+        ix, iy = self._view_to_img(x, y)
+        if self.current.tool == "pen":
+            self.current.points.append((ix, iy))
+        else:
+            if len(self.current.points) == 1:
+                self.current.points.append((ix, iy))
+            else:
+                self.current.points[-1] = (ix, iy)
+            x1, y1 = self.current.points[0]
+            x2, y2 = self.current.points[-1]
+            if abs(x2 - x1) < MIN_SHAPE and abs(y2 - y1) < MIN_SHAPE:
+                self.current = None
+                self.drawing = False
+                self.da.queue_draw()
+                return
+
+        self.strokes.append(self.current)
+        if self.current.tool in ("text", "arrow"):
+            self._selected = self.current
+        self.current = None
+        self.drawing = False
+        self._dirty = True
+        self.da.queue_draw()
+
+    def _start_text(self, ix: float, iy: float, vx: float, vy: float) -> None:
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("输入文字，Enter 确认")
+        entry.set_width_chars(28)
+        pop = Gtk.Popover()
+        pop.set_parent(self.da)
+        pop.set_child(entry)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(vx), int(vy), 1, 1
+        pop.set_pointing_to(rect)
+        pop.set_autohide(True)
+
+        def commit(*_a: Any) -> None:
+            text = entry.get_text().strip()
+            pop.popdown()
+            if text:
+                self.strokes.append(
+                    Stroke(tool="text", color=self.color, width=self.line_width, points=[(ix, iy)], text=text)
+                )
+                self.redo_stack.clear()
+                self._dirty = True
+                self.da.queue_draw()
+            self.text_popover = None
+
+        entry.connect("activate", commit)
+        pop.connect("closed", lambda *_: setattr(self, "text_popover", None))
+        self.text_popover = pop
+        pop.popup()
+        entry.grab_focus()
+
+    def _on_key(self, _c: Gtk.EventControllerKey, keyval: int, _code: int, state: Gdk.ModifierType) -> bool:
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if keyval == Gdk.KEY_space:
+            self._space_down = True
+            self.da.set_cursor(Gdk.Cursor.new_from_name("grab"))
+            return True
+        if keyval == Gdk.KEY_Escape:
+            if self.text_popover and self.text_popover.get_visible():
+                self.text_popover.popdown()
+                return True
+            if self._selected is not None:
+                self._selected = None
+                self.da.queue_draw()
+                return True
+            self.close()
+            return True
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace) and self._selected is not None:
+            if self._selected in self.strokes:
+                self.strokes.remove(self._selected)
+                self.redo_stack.clear()
+                self._dirty = True
+            self._selected = None
+            self.da.queue_draw()
+            return True
+        if self._selected is not None:
+            if keyval in (Gdk.KEY_bracketleft,):
+                self.rotate_ccw()
+                return True
+            if keyval in (Gdk.KEY_bracketright,):
+                self.rotate_cw()
+                return True
+            if keyval in (Gdk.KEY_h, Gdk.KEY_H) and not ctrl:
+                self.flip_horizontal()
+                return True
+            if keyval in (Gdk.KEY_v, Gdk.KEY_V) and not ctrl:
+                self.flip_vertical()
+                return True
+        if ctrl and keyval in (Gdk.KEY_z, Gdk.KEY_Z):
+            self.redo() if state & Gdk.ModifierType.SHIFT_MASK else self.undo()
+            return True
+        if ctrl and keyval in (Gdk.KEY_y, Gdk.KEY_Y):
+            self.redo()
+            return True
+        if ctrl and keyval in (Gdk.KEY_s, Gdk.KEY_S):
+            self.save_file()
+            return True
+        if ctrl and keyval in (Gdk.KEY_c, Gdk.KEY_C):
+            self.copy_clipboard()
+            return True
+        if ctrl and keyval in (Gdk.KEY_equal, Gdk.KEY_plus, Gdk.KEY_KP_Add):
+            self.zoom_in()
+            return True
+        if ctrl and keyval in (Gdk.KEY_minus, Gdk.KEY_KP_Subtract):
+            self.zoom_out()
+            return True
+        if ctrl and keyval in (Gdk.KEY_0, Gdk.KEY_KP_0):
+            self.zoom_fit()
+            return True
+        if keyval == Gdk.KEY_Return and not (self.text_popover and self.text_popover.get_visible()):
+            self.finish()
+            return True
+        return False
+
+    def _on_key_release(self, _c: Gtk.EventControllerKey, keyval: int, _code: int, _state: Gdk.ModifierType) -> bool:
+        if keyval == Gdk.KEY_space:
+            self._space_down = False
+            if not self._panning:
+                self._update_cursor()
+            return True
+        return False
+
+    def undo(self) -> None:
+        if not hasattr(self, "_bundle_stack"):
+            self._bundle_stack = []
+        if self.strokes:
+            self.redo_stack.append(self.strokes.pop())
+            self._selected = None
+            self._dirty = True
+            self.da.queue_draw()
+            return
+        # undo clear-all
+        if self.redo_stack and self.redo_stack[-1].tool == "__bundle__" and self._bundle_stack:
+            self.redo_stack.pop()
+            self.strokes = self._bundle_stack.pop()
+            self._selected = None
+            self._dirty = True
+            self.da.queue_draw()
+
+    def redo(self) -> None:
+        if not self.redo_stack:
+            return
+        item = self.redo_stack[-1]
+        if item.tool == "__bundle__":
+            # cannot easily redo clear without storing inverse; ignore
+            return
+        self.strokes.append(self.redo_stack.pop())
+        self._dirty = True
+        self.da.queue_draw()
+
+    def finish(self) -> None:
+        self.copy_clipboard()
+        self.close()
+
+    def _draw_stroke(self, cr: cairo.Context, s: Stroke) -> None:
+        if not s.points:
+            return
+        r, g, b = parse_color(s.color)
+        cr.save()
+        if s.angle or s.flip_h or s.flip_v:
+            self._push_stroke_transform(cr, s)
+        cr.set_source_rgba(r, g, b, 1.0)
+        cr.set_line_width(s.width)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+
+        if s.tool == "pen":
+            if len(s.points) == 1:
+                x, y = s.points[0]
+                cr.arc(x, y, s.width / 2, 0, math.tau)
+                cr.fill()
+            else:
+                cr.move_to(*s.points[0])
+                for p in s.points[1:]:
+                    cr.line_to(*p)
+                cr.stroke()
+            cr.restore()
+            return
+
+        if s.tool == "text":
+            cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            cr.set_font_size(max(12, s.width * 5))
+            x, y = s.points[0]
+            cr.set_source_rgba(0, 0, 0, 0.55)
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                cr.move_to(x + dx, y + dy)
+                cr.show_text(s.text)
+            cr.set_source_rgba(r, g, b, 1.0)
+            cr.move_to(x, y)
+            cr.show_text(s.text)
+            cr.restore()
+            return
+
+        if s.tool == "mosaic":
+            x1, y1 = s.points[0]
+            x2, y2 = s.points[-1]
+            left, top = int(min(x1, x2)), int(min(y1, y2))
+            right, bottom = int(max(x1, x2)), int(max(y1, y2))
+            cell = max(4, s.mosaic)
+            n_ch = self.pixbuf.get_n_channels()
+            rowstride = self.pixbuf.get_rowstride()
+            pixels = self.pixbuf.get_pixels()
+            for yy in range(top, bottom, cell):
+                for xx in range(left, right, cell):
+                    cw = min(cell, right - xx)
+                    ch = min(cell, bottom - yy)
+                    if cw <= 0 or ch <= 0:
+                        continue
+                    sx = min(self.img_w - 1, xx + cw // 2)
+                    sy = min(self.img_h - 1, yy + ch // 2)
+                    idx = sy * rowstride + sx * n_ch
+                    pr, pg, pb = pixels[idx] / 255.0, pixels[idx + 1] / 255.0, pixels[idx + 2] / 255.0
+                    cr.set_source_rgb(pr, pg, pb)
+                    cr.rectangle(xx, yy, cw, ch)
+                    cr.fill()
+            cr.restore()
+            return
+
+        x1, y1 = s.points[0]
+        x2, y2 = s.points[-1]
+        if s.tool == "rect":
+            cr.rectangle(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+            cr.stroke()
+        elif s.tool == "ellipse":
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            rx, ry = abs(x2 - x1) / 2, abs(y2 - y1) / 2
+            if rx >= 0.5 and ry >= 0.5:
+                cr.save()
+                cr.translate(cx, cy)
+                cr.scale(rx, ry)
+                cr.arc(0, 0, 1, 0, math.tau)
+                cr.restore()
+                cr.stroke()
+        elif s.tool == "arrow":
+            cr.move_to(x1, y1)
+            cr.line_to(x2, y2)
+            cr.stroke()
+            angle = math.atan2(y2 - y1, x2 - x1)
+            head = max(10.0, s.width * 4)
+            a1 = angle + math.pi * 0.82
+            a2 = angle - math.pi * 0.82
+            cr.move_to(x2, y2)
+            cr.line_to(x2 + head * math.cos(a1), y2 + head * math.sin(a1))
+            cr.line_to(x2 + head * math.cos(a2), y2 + head * math.sin(a2))
+            cr.close_path()
+            cr.fill()
+        cr.restore()
+
+    def _draw(self, _area: Gtk.DrawingArea, cr: cairo.Context, _w: int, _h: int) -> None:
+        br, bg, bb = parse_color(hx(self.theme["background"]))
+        cr.set_source_rgb(br, bg, bb)
+        cr.paint()
+        cr.save()
+        cr.scale(self.zoom, self.zoom)
+        Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
+        cr.paint()
+        for s in self.strokes:
+            self._draw_stroke(cr, s)
+        if self.current:
+            self._draw_stroke(cr, self.current)
+        if self._selected is not None and self._selected in self.strokes:
+            s = self._selected
+            cr.save()
+            if s.angle or s.flip_h or s.flip_v:
+                self._push_stroke_transform(cr, s)
+            x1, y1, x2, y2 = self._stroke_bounds(s)
+            cr.set_source_rgba(0.66, 0.79, 0.91, 0.9)
+            cr.set_line_width(1.0 / max(self.zoom, 0.01))
+            cr.set_dash([4.0 / max(self.zoom, 0.01), 3.0 / max(self.zoom, 0.01)])
+            cr.rectangle(x1, y1, x2 - x1, y2 - y1)
+            cr.stroke()
+            cr.set_dash([])
+            cr.restore()
+        cr.restore()
+
+    def _render_to_pixbuf(self) -> GdkPixbuf.Pixbuf:
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.img_w, self.img_h)
+        cr = cairo.Context(surface)
+        Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
+        cr.paint()
+        for s in self.strokes:
+            self._draw_stroke(cr, s)
+        surface.flush()
+        buf = surface.get_data()
+        rowstride = self.img_w * 4
+        dest = bytearray(self.img_h * rowstride)
+        src_stride = surface.get_stride()
+        for y in range(self.img_h):
+            for x in range(self.img_w):
+                si = y * src_stride + x * 4
+                b, g, r, a = buf[si], buf[si + 1], buf[si + 2], buf[si + 3]
+                di = y * rowstride + x * 4
+                dest[di], dest[di + 1], dest[di + 2], dest[di + 3] = r, g, b, a
+        return GdkPixbuf.Pixbuf.new_from_data(
+            bytes(dest), GdkPixbuf.Colorspace.RGB, True, 8, self.img_w, self.img_h, rowstride
+        )
+
+    def _write_png(self, path: Path) -> None:
+        self._render_to_pixbuf().savev(str(path), "png", [], [])
+
+    def copy_clipboard(self) -> None:
+        tmp = Path(tempfile.mktemp(prefix="villode-ss-", suffix=".png"))
+        try:
+            self._write_png(tmp)
+            with open(tmp, "rb") as f:
+                subprocess.run(["wl-copy", "--type", "image/png"], stdin=f, check=False)
+            self._toast("已复制到剪贴板")
+            self._dirty = False
+        except Exception as e:
+            self._toast(f"复制失败：{e}")
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def save_file(self) -> None:
+        SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        dest = SAVE_DIR / datetime.now().strftime("%Y-%m-%d-%H-%M-%S.png")
+        try:
+            self._write_png(dest)
+            with open(dest, "rb") as f:
+                subprocess.run(["wl-copy", "--type", "image/png"], stdin=f, check=False)
+            self._toast(f"已保存：{dest}")
+            self._dirty = False
+        except Exception as e:
+            self._toast(f"保存失败：{e}")
+
+    def _toast(self, msg: str) -> None:
+        try:
+            subprocess.Popen(
+                ["notify-send", "-a", "villode-screenshot", "-i", "image-x-generic", "截图", msg],
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+
+
+class App(Gtk.Application):
+    def __init__(self, image_path: Path | None = None, daemon: bool = False):
+        # Unique id per one-shot instance so multiple windows can open;
+        # daemon keeps a single application alive.
+        app_id = "local.villode.screenshot.editor" if daemon else f"local.villode.screenshot.editor.t{os.getpid()}"
+        super().__init__(application_id=app_id)
+        self.image_path = image_path
+        self.daemon = daemon
+        self.connect("activate", self.on_activate)
+
+    def on_activate(self, app: Gtk.Application) -> None:
+        if self.image_path is not None:
+            Editor(app, self.image_path).present()
+            self.image_path = None
+
+    def open_path(self, path: Path) -> None:
+        Editor(self, path).present()
+
+
+SOCK_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/runtime-{os.getuid()}")) / "villode-screenshot-editor.sock"
+
+
+def try_send_to_daemon(path: Path) -> bool:
+    import socket
+    if not SOCK_PATH.exists():
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.25)
+        s.connect(str(SOCK_PATH))
+        s.sendall((str(path.resolve()) + "\n").encode())
+        # wait brief ack
+        s.settimeout(0.5)
+        try:
+            s.recv(8)
+        except Exception:
+            pass
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def serve_daemon() -> int:
+    import socket
+    import threading
+
+    SOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if SOCK_PATH.exists():
+            SOCK_PATH.unlink()
+    except Exception:
+        pass
+
+    app = App(daemon=True)
+    # Hold application open with no windows
+    app.hold()
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(SOCK_PATH))
+    server.listen(8)
+    server.setblocking(False)
+
+    def accept_cb(*_a):
+        try:
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except BlockingIOError:
+                    break
+                try:
+                    data = b""
+                    conn.settimeout(1.0)
+                    while b"\n" not in data:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    line = data.decode(errors="replace").strip()
+                    conn.sendall(b"ok\n")
+                    conn.close()
+                    if line:
+                        path = Path(line).expanduser()
+                        if path.is_file():
+                            GLib.idle_add(lambda p=path: (app.open_path(p), False)[1])
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return True
+
+    GLib.io_add_watch(server.fileno(), GLib.IO_IN, accept_cb)
+    # Also present nothing — just run
+    return app.run(None)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: villode-screenshot-editor <image.png> | --daemon", file=sys.stderr)
+        return 2
+    if args[0] in ("--daemon", "-d"):
+        return serve_daemon()
+
+    path = Path(args[0]).expanduser()
+    if not path.is_file():
+        print(f"File not found: {path}", file=sys.stderr)
+        return 1
+
+    # Prefer warm daemon (near-instant); fall back to cold start
+    if try_send_to_daemon(path):
+        return 0
+    return App(path).run(None)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
