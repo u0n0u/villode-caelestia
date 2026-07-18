@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# Sync Qt6 apps to the current Caelestia colour scheme via qt6ct.
+set -euo pipefail
+
+SCHEME_JSON="${XDG_STATE_HOME:-$HOME/.local/state}/caelestia/scheme.json"
+SCHEME_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scheme/current.conf"
+QT6CT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qt6ct"
+COLORS_DIR="$QT6CT_DIR/colors"
+QSS_DIR="$QT6CT_DIR/qss"
+SCHEME_NAME="Caelestia-Dark"
+
+hex() {
+    local c="${1:-000000}"
+    c="${c#\#}"
+    c="${c//\"/}"
+    if [[ ${#c} -eq 3 ]]; then
+        c="${c:0:1}${c:0:1}${c:1:1}${c:1:1}${c:2:1}${c:2:1}"
+    fi
+    printf '%s' "${c,,}"
+}
+
+# ARGB for qt6ct (#AARRGGBB)
+argb() {
+    local rgb aa="${2:-ff}"
+    rgb="$(hex "$1")"
+    printf '#%s%s' "$aa" "$rgb"
+}
+
+declare -A C=(
+    [background]=0b0e11
+    [surface]=0b0e11
+    [surfaceContainer]=151a1f
+    [surfaceContainerLow]=101418
+    [surfaceContainerHigh]=1b2025
+    [surfaceContainerHighest]=20262c
+    [onSurface]=e0e6ee
+    [onSurfaceVariant]=a5acb3
+    [outline]=70767d
+    [outlineVariant]=42494f
+    [primary]=a9cae8
+    [onPrimary]=22435c
+    [primaryContainer]=35566f
+    [secondary]=b8c8d9
+    [error]=fa746f
+    [onError]=490006
+    [scrim]=000000
+)
+
+load_from_json() {
+    local json="$1"
+    [[ -f "$json" ]] || return 1
+    python3 - "$json" <<'PY' || return 1
+import json, sys
+data = json.load(open(sys.argv[1]))
+colours = data.get("colours") or data.get("colors") or {}
+keys = [
+    "background","surface","surfaceContainer","surfaceContainerLow",
+    "surfaceContainerHigh","surfaceContainerHighest","onSurface","onSurfaceVariant",
+    "outline","outlineVariant","primary","onPrimary","primaryContainer",
+    "secondary","error","onError","scrim",
+]
+for k in keys:
+    v = colours.get(k)
+    if v:
+        print(f"{k}={str(v).lstrip('#')}")
+PY
+}
+
+load_from_conf() {
+    local conf="$1"
+    [[ -f "$conf" ]] || return 1
+    awk -F'[= ]+' '
+        /^\$[A-Za-z0-9_]+/ {
+            name=$1; sub(/^\$/,"",name);
+            val=$NF; gsub(/#/,"",val);
+            if (val ~ /^[0-9a-fA-F]{3,8}$/) print name"="val
+        }
+    ' "$conf"
+}
+
+apply_kv() {
+    local line key val
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        key="${line%%=*}"
+        val="${line#*=}"
+        C["$key"]="$(hex "$val")"
+    done
+}
+
+if kv="$(load_from_json "$SCHEME_JSON" 2>/dev/null)"; then
+    apply_kv <<<"$kv"
+elif kv="$(load_from_conf "$SCHEME_CONF" 2>/dev/null)"; then
+    apply_kv <<<"$kv"
+else
+    echo "caelestia-qt-sync: no scheme source found" >&2
+    exit 1
+fi
+
+: "${C[surfaceContainerLow]:=${C[surface]}}"
+: "${C[surfaceContainerHighest]:=${C[surfaceContainerHigh]}}"
+: "${C[onError]:=ffffff}"
+: "${C[scrim]:=000000}"
+
+bg="${C[background]}"
+fg="${C[onSurface]}"
+muted="${C[onSurfaceVariant]}"
+surface="${C[surface]}"
+surface_c="${C[surfaceContainer]}"
+surface_low="${C[surfaceContainerLow]}"
+surface_high="${C[surfaceContainerHigh]}"
+surface_highest="${C[surfaceContainerHighest]}"
+primary="${C[primary]}"
+on_primary="${C[onPrimary]}"
+primary_c="${C[primaryContainer]}"
+secondary="${C[secondary]}"
+error="${C[error]}"
+outline_v="${C[outlineVariant]}"
+scrim="${C[scrim]}"
+
+# Qt palette roles (qt6ct order, 21 entries):
+# WindowText, Button, Light, Midlight, Dark, Mid, Text, BrightText,
+# ButtonText, Base, Window, Shadow, Highlight, HighlightedText,
+# Link, LinkVisited, AlternateBase, NoRole, ToolTipBase, ToolTipText, PlaceholderText
+build_palette() {
+    local wt bt light midlight dark mid text bright btnt base win shadow
+    local hl hlt link linkv alt norole tipb tipt place
+    wt="$(argb "$fg")"
+    bt="$(argb "$surface_high")"
+    light="$(argb "$surface_highest")"
+    midlight="$(argb "$surface_c")"
+    dark="$(argb "$bg")"
+    mid="$(argb "$outline_v")"
+    text="$(argb "$fg")"
+    bright="$(argb "ffffff")"
+    btnt="$(argb "$fg")"
+    base="$(argb "$surface_low")"
+    win="$(argb "$bg")"
+    shadow="$(argb "$scrim")"
+    hl="$(argb "$primary")"
+    hlt="$(argb "$on_primary")"
+    link="$(argb "$primary")"
+    linkv="$(argb "$secondary")"
+    alt="$(argb "$surface_c")"
+    norole="$(argb "$fg")"
+    tipb="$(argb "$surface_highest")"
+    tipt="$(argb "$fg")"
+    place="$(argb "$muted" "b3")"
+    printf '%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s' \
+        "$wt" "$bt" "$light" "$midlight" "$dark" "$mid" "$text" "$bright" \
+        "$btnt" "$base" "$win" "$shadow" "$hl" "$hlt" "$link" "$linkv" \
+        "$alt" "$norole" "$tipb" "$tipt" "$place"
+}
+
+disabled_palette() {
+    # Dimmed text, same surfaces
+    local wt bt light midlight dark mid text bright btnt base win shadow
+    local hl hlt link linkv alt norole tipb tipt place
+    wt="$(argb "$muted" "80")"
+    bt="$(argb "$surface_c")"
+    light="$(argb "$surface_high")"
+    midlight="$(argb "$surface_c")"
+    dark="$(argb "$bg")"
+    mid="$(argb "$outline_v")"
+    text="$(argb "$muted" "80")"
+    bright="$(argb "ffffff" "80")"
+    btnt="$(argb "$muted" "80")"
+    base="$(argb "$surface_low")"
+    win="$(argb "$bg")"
+    shadow="$(argb "$scrim")"
+    hl="$(argb "$primary_c")"
+    hlt="$(argb "$muted")"
+    link="$(argb "$primary" "80")"
+    linkv="$(argb "$secondary" "80")"
+    alt="$(argb "$surface_c")"
+    norole="$(argb "$muted" "80")"
+    tipb="$(argb "$surface_highest")"
+    tipt="$(argb "$muted")"
+    place="$(argb "$muted" "66")"
+    printf '%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s' \
+        "$wt" "$bt" "$light" "$midlight" "$dark" "$mid" "$text" "$bright" \
+        "$btnt" "$base" "$win" "$shadow" "$hl" "$hlt" "$link" "$linkv" \
+        "$alt" "$norole" "$tipb" "$tipt" "$place"
+}
+
+mkdir -p "$COLORS_DIR" "$QSS_DIR"
+
+active="$(build_palette)"
+disabled="$(disabled_palette)"
+
+cat > "$COLORS_DIR/${SCHEME_NAME}.conf" <<EOF
+[ColorScheme]
+active_colors=${active}
+disabled_colors=${disabled}
+inactive_colors=${active}
+EOF
+
+# Light glass-friendly QSS polish (works on Fusion)
+cat > "$QSS_DIR/caelestia-glass.qss" <<EOF
+/* Caelestia Qt glass polish — generated $(date -Iseconds) */
+QToolTip {
+    background-color: #${surface_highest};
+    color: #${fg};
+    border: 1px solid #${outline_v};
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+QMenu {
+    background-color: #${surface_c};
+    color: #${fg};
+    border: 1px solid #${outline_v};
+    padding: 4px;
+}
+QMenu::item:selected {
+    background-color: #${primary_c};
+    color: #${fg};
+}
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background-color: #${surface_low};
+    color: #${fg};
+    border: 1px solid #${outline_v};
+    border-radius: 6px;
+    padding: 4px 8px;
+    selection-background-color: #${primary};
+    selection-color: #${on_primary};
+}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
+    border: 1px solid #${primary};
+}
+QPushButton {
+    background-color: #${surface_high};
+    color: #${fg};
+    border: 1px solid #${outline_v};
+    border-radius: 8px;
+    padding: 6px 12px;
+}
+QPushButton:hover {
+    background-color: #${surface_highest};
+}
+QPushButton:pressed, QPushButton:checked {
+    background-color: #${primary};
+    color: #${on_primary};
+    border-color: #${primary};
+}
+QPushButton:disabled {
+    color: #${muted};
+    background-color: #${surface_c};
+}
+QHeaderView::section {
+    background-color: #${surface_c};
+    color: #${fg};
+    border: none;
+    border-bottom: 1px solid #${outline_v};
+    padding: 6px 8px;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: rgba(224, 230, 238, 0.30);
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(224, 230, 238, 0.48);
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+    height: 0;
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(224, 230, 238, 0.30);
+    border-radius: 5px;
+    min-width: 24px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+    width: 0;
+}
+QTabBar::tab {
+    background: #${surface_c};
+    color: #${muted};
+    padding: 8px 14px;
+    border: none;
+}
+QTabBar::tab:selected {
+    color: #${fg};
+    border-bottom: 2px solid #${primary};
+}
+QTabWidget::pane {
+    border: 1px solid #${outline_v};
+    background: #${bg};
+}
+QProgressBar {
+    background: #${surface_c};
+    border: none;
+    border-radius: 6px;
+    text-align: center;
+    color: #${fg};
+}
+QProgressBar::chunk {
+    background: #${primary};
+    border-radius: 6px;
+}
+QCheckBox, QRadioButton {
+    color: #${fg};
+    spacing: 8px;
+}
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #${surface_high};
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #${fg};
+    width: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+QSlider::sub-page:horizontal {
+    background: #${primary};
+    border-radius: 3px;
+}
+EOF
+
+# qt6ct main config
+cat > "$QT6CT_DIR/qt6ct.conf" <<EOF
+[Appearance]
+color_scheme_path=${COLORS_DIR}/${SCHEME_NAME}.conf
+custom_palette=true
+icon_theme=Papirus-Dark
+standard_dialogs=default
+style=Fusion
+
+[Fonts]
+fixed="Monospace,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1"
+general="Sans Serif,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1"
+
+[Interface]
+activate_item_on_single_click=1
+buttonbox_layout=0
+cursor_flash_time=1000
+dialog_buttons_have_icons=1
+double_click_interval=400
+gui_effects=@Invalid()
+keyboard_scheme=2
+menus_have_icons=true
+show_shortcuts_in_context_menus=true
+stylesheets=${QSS_DIR}/caelestia-glass.qss
+toolbutton_style=4
+underline_shortcut=1
+wheel_scroll_lines=3
+
+[SettingsWindow]
+geometry=@ByteArray()
+
+[Troubleshooting]
+force_raster_widgets=1
+ignored_applications=@Invalid()
+EOF
+
+echo "Qt synced → scheme=${SCHEME_NAME} primary=#${primary} bg=#${bg} (qt6ct/Fusion)"
+echo "Note: already-open Qt apps need a restart to pick up the palette."
