@@ -187,14 +187,14 @@ EOF
 }
 
 window, .background, dialog, messagedialog, .csd {
-    background-color: @bg_color;
+    background-color: alpha(@bg_color, 0.82);
     color: @fg_color;
 }
 
 headerbar, .titlebar, .titlebar.default-decoration {
-    background-color: #${surface_c};
+    background-color: alpha(#${surface_c}, 0.70);
     color: @fg_color;
-    border-bottom: 1px solid alpha(#${outline_v}, 0.9);
+    border-bottom: 1px solid alpha(#${outline_v}, 0.55);
     box-shadow: none;
     min-height: 40px;
 }
@@ -212,9 +212,9 @@ headerbar button:hover, .titlebar button:hover {
 
 button {
     background-image: none;
-    background-color: #${surface_high};
+    background-color: alpha(#${surface_high}, 0.78);
     color: @fg_color;
-    border: 1px solid alpha(#${outline_v}, 0.95);
+    border: 1px solid alpha(#${outline_v}, 0.70);
     border-radius: 8px;
     padding: 6px 12px;
     min-height: 28px;
@@ -245,9 +245,9 @@ button:disabled {
 
 entry, textview, spinbutton, searchbar entry {
     background-image: none;
-    background-color: #${surface_low};
+    background-color: alpha(#${surface_low}, 0.88);
     color: @fg_color;
-    border: 1px solid #${outline_v};
+    border: 1px solid alpha(#${outline_v}, 0.80);
     border-radius: 8px;
     padding: 6px 10px;
     box-shadow: none;
@@ -265,7 +265,7 @@ entry:disabled {
 }
 
 treeview, list, listview, iconview, .view, .content-view {
-    background-color: #${surface};
+    background-color: alpha(#${surface}, 0.78);
     color: @fg_color;
 }
 
@@ -285,9 +285,9 @@ row:selected, list row:selected, treeview.view:selected,
 }
 
 .sidebar, paned > .sidebar, stacksidebar, placessidebar {
-    background-color: #${surface_c};
+    background-color: alpha(#${surface_c}, 0.68);
     color: @fg_color;
-    border-right: 1px solid alpha(#${outline_v}, 0.8);
+    border-right: 1px solid alpha(#${outline_v}, 0.55);
 }
 
 scrolledwindow, viewport {
@@ -369,10 +369,10 @@ check:checked, radio:checked {
 }
 
 menu, .menu, .context-menu {
-    background-color: #${surface_c};
+    background-color: alpha(#${surface_c}, 0.78);
     color: @fg_color;
-    border: 1px solid #${outline_v};
-    border-radius: 10px;
+    border: 1px solid alpha(#${outline_v}, 0.65);
+    border-radius: 12px;
     padding: 4px;
 }
 
@@ -389,24 +389,24 @@ menuitem:hover, modelbutton:hover, menuitem:selected {
 }
 
 popover, popover.background, .popover {
-    background-color: #${surface_c};
+    background-color: alpha(#${surface_high}, 0.80);
     color: @fg_color;
-    border: 1px solid #${outline_v};
-    border-radius: 12px;
-    box-shadow: 0 8px 24px alpha(#${scrim}, 0.4);
+    border: 1px solid alpha(#${outline_v}, 0.60);
+    border-radius: 14px;
+    box-shadow: 0 10px 30px alpha(#${scrim}, 0.35);
 }
 
 tooltip, tooltip.background {
-    background-color: #${surface_highest};
+    background-color: alpha(#${surface_highest}, 0.88);
     color: @fg_color;
-    border: 1px solid #${outline_v};
-    border-radius: 8px;
+    border: 1px solid alpha(#${outline_v}, 0.55);
+    border-radius: 10px;
     padding: 6px 10px;
 }
 
 notebook > header {
-    background-color: #${surface_c};
-    border-color: #${outline_v};
+    background-color: alpha(#${surface_c}, 0.72);
+    border-color: alpha(#${outline_v}, 0.55);
 }
 
 notebook > header > tabs > tab {
@@ -422,7 +422,7 @@ notebook > header > tabs > tab:checked {
 }
 
 notebook > stack {
-    background-color: @bg_color;
+    background-color: alpha(@bg_color, 0.82);
 }
 
 progressbar trough {
@@ -499,26 +499,26 @@ write_overlay_css() {
 @define-color error_bg_color #${error_c};
 @define-color error_fg_color #${on_error};
 
-@define-color window_bg_color #${bg};
+@define-color window_bg_color alpha(#${bg}, 0.82);
 @define-color window_fg_color #${fg};
-@define-color view_bg_color #${surface};
+@define-color view_bg_color alpha(#${surface}, 0.80);
 @define-color view_fg_color #${fg};
-@define-color headerbar_bg_color #${surface_c};
+@define-color headerbar_bg_color alpha(#${surface_c}, 0.70);
 @define-color headerbar_fg_color #${fg};
 @define-color headerbar_border_color #${outline_v};
 @define-color headerbar_backdrop_color #${surface};
 @define-color headerbar_shade_color alpha(#${scrim}, 0.25);
-@define-color card_bg_color #${surface_c};
+@define-color card_bg_color alpha(#${surface_c}, 0.78);
 @define-color card_fg_color #${fg};
-@define-color popover_bg_color #${surface_high};
+@define-color popover_bg_color alpha(#${surface_high}, 0.80);
 @define-color popover_fg_color #${fg};
-@define-color dialog_bg_color #${surface_c};
+@define-color dialog_bg_color alpha(#${surface_c}, 0.84);
 @define-color dialog_fg_color #${fg};
-@define-color sidebar_bg_color #${surface_c};
+@define-color sidebar_bg_color alpha(#${surface_c}, 0.68);
 @define-color sidebar_fg_color #${fg};
 @define-color sidebar_border_color #${outline_v};
 @define-color sidebar_backdrop_color #${surface};
-@define-color secondary_sidebar_bg_color #${surface_low};
+@define-color secondary_sidebar_bg_color alpha(#${surface_low}, 0.72);
 @define-color secondary_sidebar_fg_color #${fg};
 @define-color secondary_sidebar_border_color #${outline_v};
 @define-color secondary_sidebar_backdrop_color #${surface};
@@ -548,11 +548,24 @@ write_overlay_css() {
 @define-color error_color @error_color;
 @define-color success_color @success_color;
 
-/* Hard fixes for common unreadable cases */
+/* Hard fixes + glass for common unreadable cases */
 window, .background, dialog, messagedialog {
     background-color: @window_bg_color;
     color: @window_fg_color;
 }
+
+headerbar, .titlebar {
+    background-color: @headerbar_bg_color;
+}
+
+.sidebar, paned > .sidebar, stacksidebar, placessidebar {
+    background-color: @sidebar_bg_color;
+}
+
+menu, .menu, .context-menu, popover, popover.background {
+    background-color: @popover_bg_color;
+}
+
 
 label, .label {
     color: @window_fg_color;
@@ -565,7 +578,7 @@ label.dim-label, .dim-label, .subtitle {
 
 /* Ensure text fields are never light-on-light / dark-on-dark */
 entry, textview, textview text, spinbutton, search entry {
-    background-color: #${surface_low};
+    background-color: alpha(#${surface_low}, 0.90);
     color: @window_fg_color;
     caret-color: @window_fg_color;
 }
