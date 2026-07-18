@@ -284,7 +284,8 @@ if ! any_component_installed; then
         "$HOME/.local/bin/villode-datetime" \
         "$HOME/.local/bin/villode-terminal" \
         "$HOME/.local/bin/villode-explorer" \
-        "$HOME/.local/bin/villode-screenshot-editor"
+        "$HOME/.local/bin/villode-screenshot-editor" \
+        "$HOME/.local/bin/caelestia-gtk-sync"
     # Only remove swappy if it is our PATH shim, never a real package binary.
     if [[ -f "$HOME/.local/bin/swappy" ]] &&
        grep -q 'Villode screenshot editor (swappy-compatible shim)' \

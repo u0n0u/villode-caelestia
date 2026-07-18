@@ -1329,7 +1329,7 @@ install_release_files() {
             villode-hyprland-compositor villode-hyprland.desktop \
             villode-terminal villode-explorer villode-caelestia-shell-guard \
             villode-logout villode-system-update villode-datetime \
-            villode-screenshot-editor swappy-villode; do
+            villode-screenshot-editor swappy-villode caelestia-gtk-sync; do
             [[ -f "$repo_dir/session/$file" ]] || continue
             install -Dm644 "$repo_dir/session/$file" "$release_dir/session/$file"
         done
@@ -1349,6 +1349,8 @@ install_release_files() {
             chmod 755 "$release_dir/session/villode-screenshot-editor"
         [[ -f "$release_dir/session/swappy-villode" ]] && \
             chmod 755 "$release_dir/session/swappy-villode"
+        [[ -f "$release_dir/session/caelestia-gtk-sync" ]] && \
+            chmod 755 "$release_dir/session/caelestia-gtk-sync"
     fi
 
     install -Dm755 "$repo_dir/uninstall.sh" "$HOME/.local/bin/villode-caelestia-uninstall"
@@ -1376,6 +1378,12 @@ install_release_files() {
     if [[ -f "$repo_dir/session/swappy-villode" ]]; then
         install -Dm755 "$repo_dir/session/swappy-villode" \
             "$HOME/.local/bin/swappy"
+    fi
+    if [[ -f "$repo_dir/session/caelestia-gtk-sync" ]]; then
+        install -Dm755 "$repo_dir/session/caelestia-gtk-sync" \
+            "$HOME/.local/bin/caelestia-gtk-sync"
+        # Apply current scheme to GTK immediately after install.
+        "$HOME/.local/bin/caelestia-gtk-sync" >/dev/null 2>&1 || true
     fi
     if [[ -f "$repo_dir/lib/git-net.sh" ]]; then
         # PATH-installed update.sh lives outside the release tree; keep the
