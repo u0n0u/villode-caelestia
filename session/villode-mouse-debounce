@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Debounce physical mouse button chatter for Wayland/Hyprland.
+
+Evidence from this host (Mi Smart Mouse 2717:501e): after LEFT UP, another
+LEFT DOWN arrives ~15ms later — hardware switch bounce. That splits one click
+into two, and breaks long-press into short holds.
+
+This process:
+  1. Opens the physical mouse event node
+  2. EVIOCGRAB so only we receive its events
+  3. Creates a virtual uinput mouse
+  4. Replays motion/wheel immediately; debounces BTN_* with a release timer
+
+Default debounce is 40ms (covers the observed 15ms bounce with margin).
+Requires root (or membership in `input` + write to /dev/uinput).
+"""
+from __future__ import annotations
+
+import argparse
+import atexit
+import ctypes
+import ctypes.util
+import fcntl
+import os
+import select
+import signal
+import struct
+import sys
+import time
+from pathlib import Path
+
+# linux/input-event-codes.h
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_REL = 0x02
+EV_MSC = 0x04
+SYN_REPORT = 0
+REL_X = 0x00
+REL_Y = 0x01
+REL_WHEEL = 0x08
+REL_HWHEEL = 0x06
+BTN_LEFT = 0x110
+BTN_RIGHT = 0x111
+BTN_MIDDLE = 0x112
+BTN_SIDE = 0x113
+BTN_EXTRA = 0x114
+BTN_FORWARD = 0x115
+BTN_BACK = 0x116
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+UI_SET_RELBIT = 0x40045566
+UI_DEV_SETUP = 0x405c5503
+UI_DEV_CREATE = 0x5501
+UI_DEV_DESTROY = 0x5502
+EVIOCGRAB = 0x40044590
+
+BUTTONS = (
+    BTN_LEFT,
+    BTN_RIGHT,
+    BTN_MIDDLE,
+    BTN_SIDE,
+    BTN_EXTRA,
+    BTN_FORWARD,
+    BTN_BACK,
+)
+
+# input_event: timeval(sec, usec) + type + code + value  (24 bytes on 64-bit)
+EVENT_FMT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FMT)
+
+
+class UinputSetup(ctypes.Structure):
+    _fields_ = [
+        ("id_bustype", ctypes.c_uint16),
+        ("id_vendor", ctypes.c_uint16),
+        ("id_product", ctypes.c_uint16),
+        ("id_version", ctypes.c_uint16),
+        ("name", ctypes.c_char * 80),
+        ("ff_effects_max", ctypes.c_uint32),
+    ]
+
+
+def find_device(name_substr: str | None, prefer_vid_pid: tuple[str, str] | None) -> Path:
+    """Locate /dev/input/eventN for the physical mouse (not keyboard nodes)."""
+    candidates: list[tuple[int, Path, str]] = []
+    for sys_event in sorted(Path("/sys/class/input").glob("event*")):
+        name_path = sys_event / "device" / "name"
+        if not name_path.exists():
+            continue
+        name = name_path.read_text(encoding="utf-8", errors="replace").strip()
+        low = name.lower()
+        if "mouse" not in low:
+            continue
+        # Skip the "Mouse" node that is actually a touchpad companion if asked
+        # for Mi Smart; prefer dongle mouse name.
+        dev = Path("/dev/input") / sys_event.name
+        score = 0
+        if name_substr and name_substr.lower() in low:
+            score += 10
+        if prefer_vid_pid:
+            vendor = (sys_event / "device" / "id" / "vendor")
+            product = (sys_event / "device" / "id" / "product")
+            try:
+                if vendor.read_text().strip() == prefer_vid_pid[0] and product.read_text().strip() == prefer_vid_pid[1]:
+                    score += 20
+            except OSError:
+                pass
+        if "touchpad" in low:
+            score -= 5
+        if "keyboard" in low or "consumer" in low or "system control" in low:
+            score -= 20
+        candidates.append((score, dev, name))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if not candidates or candidates[0][0] < 0:
+        raise SystemExit("No suitable mouse event node found")
+    best = candidates[0]
+    print(f"using {best[1]} ({best[2]}) score={best[0]}", flush=True)
+    return best[1]
+
+
+def pack_event(ev_type: int, code: int, value: int, now: float | None = None) -> bytes:
+    if now is None:
+        now = time.time()
+    sec = int(now)
+    usec = int((now - sec) * 1_000_000)
+    return struct.pack(EVENT_FMT, sec, usec, ev_type, code, value)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", help="event node path, e.g. /dev/input/event6")
+    parser.add_argument("--name", default="mi smart mouse", help="substring match for device name")
+    parser.add_argument("--vid", default="2717", help="USB idVendor hex (default Xiaomi 2717)")
+    parser.add_argument("--pid", default="501e", help="USB idProduct hex")
+    parser.add_argument("--debounce-ms", type=float, default=40.0, help="release debounce window (ms)")
+    parser.add_argument("--dry-run", action="store_true", help="log decisions, do not grab/create uinput")
+    args = parser.parse_args()
+
+    debounce_s = max(0.0, args.debounce_ms / 1000.0)
+    device = Path(args.device) if args.device else find_device(args.name, (args.vid.lower(), args.pid.lower()))
+
+    if args.dry_run:
+        print(f"dry-run would debounce {device} with {args.debounce_ms}ms", flush=True)
+        return 0
+
+    if not os.access(device, os.R_OK):
+        print(f"cannot read {device} (need root or input group)", file=sys.stderr)
+        return 1
+    if not os.access("/dev/uinput", os.W_OK):
+        print("cannot write /dev/uinput (need root)", file=sys.stderr)
+        return 1
+
+    src = os.open(device, os.O_RDONLY | os.O_NONBLOCK)
+    # Grab exclusive access so compositor no longer sees raw bounce.
+    fcntl.ioctl(src, EVIOCGRAB, 1)
+
+    ufd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(ufd, UI_SET_EVBIT, EV_KEY)
+    fcntl.ioctl(ufd, UI_SET_EVBIT, EV_REL)
+    fcntl.ioctl(ufd, UI_SET_EVBIT, EV_SYN)
+    for btn in BUTTONS:
+        fcntl.ioctl(ufd, UI_SET_KEYBIT, btn)
+    for rel in (REL_X, REL_Y, REL_WHEEL, REL_HWHEEL):
+        fcntl.ioctl(ufd, UI_SET_RELBIT, rel)
+
+    setup = UinputSetup()
+    setup.id_bustype = 0x03  # USB
+    try:
+        setup.id_vendor = int(args.vid, 16)
+        setup.id_product = int(args.pid, 16)
+    except ValueError:
+        setup.id_vendor = 0
+        setup.id_product = 0
+    setup.id_version = 1
+    setup.name = b"Villode Debounced Mouse"
+    setup.ff_effects_max = 0
+    fcntl.ioctl(ufd, UI_DEV_SETUP, setup)
+    fcntl.ioctl(ufd, UI_DEV_CREATE)
+
+    # Logical button state and pending release deadlines.
+    logical_down: dict[int, bool] = {b: False for b in BUTTONS}
+    pending_up_at: dict[int, float | None] = {b: None for b in BUTTONS}
+    stats = {"pass": 0, "suppress_down": 0, "delay_up": 0, "cancel_up": 0}
+
+    def emit(ev_type: int, code: int, value: int) -> None:
+        os.write(ufd, pack_event(ev_type, code, value))
+        stats["pass"] += 1
+
+    def emit_report() -> None:
+        os.write(ufd, pack_event(EV_SYN, SYN_REPORT, 0))
+
+    def flush_pending(now: float) -> None:
+        flushed = False
+        for btn, when in list(pending_up_at.items()):
+            if when is not None and now >= when and logical_down[btn]:
+                logical_down[btn] = False
+                pending_up_at[btn] = None
+                emit(EV_KEY, btn, 0)
+                flushed = True
+        if flushed:
+            emit_report()
+
+    def cleanup(*_args) -> None:
+        try:
+            fcntl.ioctl(src, EVIOCGRAB, 0)
+        except OSError:
+            pass
+        try:
+            fcntl.ioctl(ufd, UI_DEV_DESTROY)
+        except OSError:
+            pass
+        try:
+            os.close(src)
+        except OSError:
+            pass
+        try:
+            os.close(ufd)
+        except OSError:
+            pass
+        print(
+            f"stopped suppress_down={stats['suppress_down']} "
+            f"delay_up={stats['delay_up']} cancel_up={stats['cancel_up']}",
+            flush=True,
+        )
+
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+    print(
+        f"debouncing {device} window={args.debounce_ms}ms → virtual 'Villode Debounced Mouse'",
+        flush=True,
+    )
+
+    buf = b""
+    while True:
+        now = time.time()
+        flush_pending(now)
+        # Wake soon enough to fire pending release timers.
+        timeouts = [pending_up_at[b] - now for b in BUTTONS if pending_up_at[b] is not None]
+        wait = min(timeouts) if timeouts else 0.05
+        wait = max(0.001, min(0.05, wait))
+        r, _, _ = select.select([src], [], [], wait)
+        now = time.time()
+        flush_pending(now)
+        if not r:
+            continue
+        try:
+            chunk = os.read(src, EVENT_SIZE * 64)
+        except BlockingIOError:
+            continue
+        if not chunk:
+            continue
+        buf += chunk
+        while len(buf) >= EVENT_SIZE:
+            raw = buf[:EVENT_SIZE]
+            buf = buf[EVENT_SIZE:]
+            _sec, _usec, ev_type, code, value = struct.unpack(EVENT_FMT, raw)
+
+            # Pass relative motion and non-button keys straight through.
+            if ev_type == EV_REL:
+                emit(ev_type, code, value)
+                continue
+            if ev_type == EV_SYN:
+                emit(ev_type, code, value)
+                continue
+            if ev_type != EV_KEY or code not in logical_down:
+                emit(ev_type, code, value)
+                continue
+
+            # Button debounce state machine.
+            if value == 1:  # DOWN
+                if pending_up_at[code] is not None:
+                    # Bounce during release window: keep held, cancel pending UP.
+                    pending_up_at[code] = None
+                    stats["cancel_up"] += 1
+                    continue
+                if logical_down[code]:
+                    stats["suppress_down"] += 1
+                    continue
+                logical_down[code] = True
+                emit(EV_KEY, code, 1)
+            elif value == 0:  # UP
+                if not logical_down[code]:
+                    continue
+                # Delay release so chatter re-press can cancel it.
+                pending_up_at[code] = now + debounce_s
+                stats["delay_up"] += 1
+            # value==2 (repeat) ignored for buttons
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

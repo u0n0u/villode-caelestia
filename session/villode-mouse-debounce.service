@@ -1,0 +1,14 @@
+[Unit]
+Description=Villode mouse button debounce (hardware chatter filter)
+After=systemd-udevd.service
+Before=graphical.target
+
+[Service]
+Type=simple
+# Debounce Mi Smart Mouse (2717:501e). Adjust --name/--vid/--pid if needed.
+ExecStart=/usr/bin/python3 /usr/local/lib/villode/villode-mouse-debounce --vid 2717 --pid 501e --name "mi smart mouse" --debounce-ms 40
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
