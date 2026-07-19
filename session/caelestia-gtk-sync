@@ -10,7 +10,7 @@ SCHEME_JSON="${XDG_STATE_HOME:-$HOME/.local/state}/caelestia/scheme.json"
 SCHEME_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/scheme/current.conf"
 GTK3_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-3.0"
 GTK4_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-4.0"
-THEME_DIR="$HOME/.themes/Caelestia-Dark"
+THEME_DIR=""  # set after scheme mode is known
 
 hex() {
     local c="${1:-000000}"
@@ -112,6 +112,31 @@ fi
 : "${C[scrim]:=000000}"
 : "${C[shadow]:=000000}"
 
+# Scheme mode drives light/dark system preference. Colours already match mode.
+scheme_mode="dark"
+if [[ -f "$SCHEME_JSON" ]]; then
+    scheme_mode="$(python3 - "$SCHEME_JSON" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("mode") or "dark")
+except Exception:
+    print("dark")
+PY
+)"
+fi
+[[ "$scheme_mode" == "light" ]] || scheme_mode="dark"
+prefer_dark=1
+color_scheme="prefer-dark"
+icon_theme="Papirus-Dark"
+named_theme="Caelestia-Dark"
+if [[ "$scheme_mode" == "light" ]]; then
+    prefer_dark=0
+    color_scheme="prefer-light"
+    icon_theme="Papirus"
+    named_theme="Caelestia-Light"
+fi
+THEME_DIR="$HOME/.themes/$named_theme"
+
 bg="${C[background]}"
 fg="${C[onSurface]}"
 fg_muted="${C[onSurfaceVariant]}"
@@ -135,16 +160,25 @@ error_c="${C[errorContainer]}"
 scrim="${C[scrim]}"
 
 # Pick a complete base theme if available (full widget coverage).
-# Custom Caelestia-Dark alone is incomplete and causes unreadable stock controls.
+# Custom Caelestia theme alone is incomplete and causes unreadable stock controls.
 base_theme=""
-for candidate in adw-gtk3-dark Adwaita-dark Adwaita; do
-    if [[ -d "$HOME/.themes/$candidate" || -d "/usr/share/themes/$candidate" ]]; then
-        base_theme="$candidate"
-        break
-    fi
-done
+if [[ "$scheme_mode" == "light" ]]; then
+    for candidate in adw-gtk3 Adwaita; do
+        if [[ -d "$HOME/.themes/$candidate" || -d "/usr/share/themes/$candidate" ]]; then
+            base_theme="$candidate"
+            break
+        fi
+    done
+else
+    for candidate in adw-gtk3-dark Adwaita-dark Adwaita; do
+        if [[ -d "$HOME/.themes/$candidate" || -d "/usr/share/themes/$candidate" ]]; then
+            base_theme="$candidate"
+            break
+        fi
+    done
+fi
 # Always keep a named theme for apps that only read gtk-theme-name.
-active_theme="${base_theme:-Caelestia-Dark}"
+active_theme="${base_theme:-$named_theme}"
 
 write_named_theme() {
     local dir="$1"
@@ -153,21 +187,21 @@ write_named_theme() {
     cat > "$dir/index.theme" <<EOF
 [Desktop Entry]
 Type=X-GNOME-Metatheme
-Name=Caelestia-Dark
-Comment=Generated from Caelestia scheme
+Name=${named_theme}
+Comment=Generated from Caelestia scheme (${scheme_mode})
 Encoding=UTF-8
 
 [X-GNOME-Metatheme]
-GtkTheme=Caelestia-Dark
+GtkTheme=${named_theme}
 MetacityTheme=Adwaita
-IconTheme=Papirus-Dark
+IconTheme=${icon_theme}
 CursorTheme=Adwaita
 ButtonLayout=close,minimize,maximize:
 EOF
 
-    # Full-ish CSS for apps that select Caelestia-Dark directly.
+    # Full-ish CSS for apps that select the named theme directly.
     cat > "$dir/gtk-3.0/gtk.css" <<EOF
-/* Caelestia-Dark — generated $(date -Iseconds) */
+/* ${named_theme} — generated $(date -Iseconds) */
 @define-color bg_color #${bg};
 @define-color fg_color #${fg};
 @define-color base_color #${surface};
@@ -618,10 +652,10 @@ write_settings_ini() {
     cat > "$dir/settings.ini" <<EOF
 [Settings]
 gtk-theme-name=${theme}
-gtk-icon-theme-name=Papirus-Dark
+gtk-icon-theme-name=${icon_theme}
 gtk-cursor-theme-name=Adwaita
 gtk-font-name=Sans 10
-gtk-application-prefer-dark-theme=1
+gtk-application-prefer-dark-theme=${prefer_dark}
 gtk-decoration-layout=icon:minimize,maximize,close
 EOF
 }
@@ -629,11 +663,20 @@ EOF
 write_settings_ini "$GTK3_DIR" "$active_theme"
 write_settings_ini "$GTK4_DIR" "$active_theme"
 
+# Session env so next app launches follow mode (login still wins until re-login).
+env_dir="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d"
+mkdir -p "$env_dir"
+if [[ "$scheme_mode" == "light" ]]; then
+    printf 'GTK_THEME=%s\n' "$named_theme" >"$env_dir/90-villode-gtk.conf"
+else
+    printf 'GTK_THEME=%s:dark\n' "$named_theme" >"$env_dir/90-villode-gtk.conf"
+fi
+
 # gsettings (GNOME/GTK apps that ignore settings.ini)
 if command -v gsettings >/dev/null 2>&1; then
     gsettings set org.gnome.desktop.interface gtk-theme "$active_theme" 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
-    gsettings set org.gnome.desktop.interface icon-theme Papirus-Dark 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface color-scheme "$color_scheme" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface icon-theme "$icon_theme" 2>/dev/null || true
 fi
 
 # Notify running GTK apps (best-effort)
@@ -642,8 +685,12 @@ if command -v gdbus >/dev/null 2>&1; then
         --method org.gnome.Shell.Eval 'Meta.restart("Reloading theme")' >/dev/null 2>&1 || true
 fi
 
-echo "GTK synced → theme=${active_theme} primary=#${primary} bg=#${bg}"
+echo "GTK synced → mode=${scheme_mode} theme=${active_theme} primary=#${primary} bg=#${bg}"
 if [[ -z "$base_theme" ]]; then
-    echo "提示：未找到 adw-gtk3-dark/Adwaita-dark，已使用自带 Caelestia-Dark。" >&2
+    if [[ "$scheme_mode" == "light" ]]; then
+        echo "提示：未找到 adw-gtk3/Adwaita，已使用自带 ${named_theme}。" >&2
+    else
+        echo "提示：未找到 adw-gtk3-dark/Adwaita-dark，已使用自带 ${named_theme}。" >&2
+    fi
     echo "      安装完整主题可进一步改善兼容性：sudo pacman -S adw-gtk-theme" >&2
 fi
