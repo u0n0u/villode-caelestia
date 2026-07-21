@@ -498,6 +498,9 @@ install_session_dependencies() {
             qt6-base qt6-declarative qt6-svg qt6-wayland \
             python python-gobject python-cairo \
             sddm
+        # Phone USB file transfer (MTP) + virtual mounts for file manager / gio
+        pacman_install_available \
+            gvfs gvfs-mtp gvfs-gphoto2 libmtp
         # Daily apps: terminal, file manager, media, images, browser.
         # Prefer repo packages; Chrome may need AUR.
         pacman_install_available \
